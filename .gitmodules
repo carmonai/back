@@ -1,0 +1,3 @@
+[submodule "api/account"]
+	path = api/account
+	url = https://github.com/carmonai/account.git
