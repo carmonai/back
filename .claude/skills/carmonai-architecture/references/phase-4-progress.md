@@ -13,7 +13,7 @@ Working log started 2026-10-03. Plan: [inference-plan.md](inference-plan.md) §4
 - [x] smoke: credit grant via an internal call, balance drops after usage, a second org drains a tiny grant → 402 → grant → 200; erasure section closes both orgs
 - [x] `mvn clean verify` + CPU smoke green; logs clean
 - [x] Docs: plan progress/deviations, skills, templates
-- [ ] Commit + push, PRs with merge order (libraries → services → back)
+- [x] Commit + push, PRs with merge order (libraries → services → back)
 
 ## Design decisions (keep consistent when resuming)
 
