@@ -1,0 +1,61 @@
+# Builds every module, runs unit + Testcontainers tests, then the stack and smoke.sh.
+# A broken migration, a Resource/Feign mismatch or a security regression in the smoke test fails it.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest   # Docker preinstalled; Testcontainers needs a Linux runner
+    timeout-minutes: 30
+    steps:
+      # The modules are private sibling repos: GITHUB_TOKEN can't read them.
+      # SUBMODULES_TOKEN = fine-grained token, Contents: read-only on the carmonai module repos.
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          token: ${{ secrets.SUBMODULES_TOKEN }}
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Build and test
+        run: mvn -B verify
+
+      # Fresh secrets every run; none are stored anywhere.
+      - name: Generate docker/.env
+        working-directory: docker
+        run: |
+          {
+            echo "DB_NAME=carmonai"
+            echo "DB_USER=carmonai"
+            echo "DB_PASSWORD=$(openssl rand -hex 24)"
+            echo "JWT_PRIVATE_KEY=$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 | grep -v -- ----- | tr -d '\r\n')"
+          } > .env
+
+      - name: Start the stack
+        working-directory: docker
+        run: docker compose up -d --build --wait
+
+      - name: Smoke test
+        working-directory: docker
+        run: bash smoke.sh
+
+      - name: Service logs
+        if: failure()
+        working-directory: docker
+        run: docker compose logs --no-color
+
+      - name: Stop the stack
+        if: always()
+        working-directory: docker
+        run: docker compose down -v
