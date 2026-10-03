@@ -34,7 +34,7 @@ Done when: `mvn -q verify` passes (unit + IT), the image builds, and the readine
 - Add its route to gateway-service.
 
 - Extend `back/docker/smoke.sh` with the new routes' happy path and their 401/403/404 cases.
-- The new submodule must be readable by CI's `SUBMODULES_TOKEN` (add the repo to the token's repository list).
+- The new submodule must be readable by CI's `CARMONAI_TOKEN` (add the repo to the token's repository list).
 
 Done when: a request through the gateway reaches the service, the service port is unreachable from the host, and CI (`.github/workflows/ci.yaml` in `back`) is green.
 

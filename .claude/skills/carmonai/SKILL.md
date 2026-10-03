@@ -21,7 +21,7 @@ Inference-as-a-Service for Brazil: the first of its kind, B2B, LGPD-friendly. Ja
 |---|---|
 | Phase 1: `account`, `account-service`, `auth`, `auth-service`, `gateway-service` | built (2026-10-02); `mvn package` from `back/`, `docker compose up` in `back/docker`, `back/docker/smoke.sh` checks it end to end |
 | nginx LB, Redis, Kafka, observability, K8s, CI | later; conventions pre-recorded in `carmonai-architecture/references/platform.md` |
-| Inference | plan revision 2 (2026-10-02): `carmonai-architecture/references/inference-plan.md` — phases 0–7, decisions in its §12, review findings in `plan-review-2026-10-02.md`. Approved 2026-10-03; phase 0 built locally (Java 25, unit + Testcontainers tests, CI workflow, JSON logs), green locally, CI not yet run (needs push + `SUBMODULES_TOKEN`). Prototype is local only: laptop RTX 3050 6 GB running `Qwen3-4B-Instruct-2507` (4-bit AWQ), llama.cpp CPU fallback, synthetic data |
+| Inference | plan revision 2 (2026-10-02): `carmonai-architecture/references/inference-plan.md` — phases 0–7, decisions in its §12, review findings in `plan-review-2026-10-02.md`. Approved 2026-10-03; phase 0 built locally (Java 25, unit + Testcontainers tests, CI workflow, JSON logs), green locally, CI not yet run (needs push + `CARMONAI_TOKEN`). Prototype is local only: laptop RTX 3050 6 GB running `Qwen3-4B-Instruct-2507` (4-bit AWQ), llama.cpp CPU fallback, synthetic data |
 
 ## Naming
 

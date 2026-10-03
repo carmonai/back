@@ -16,11 +16,11 @@ jobs:
     timeout-minutes: 30
     steps:
       # The modules are private sibling repos: GITHUB_TOKEN can't read them.
-      # SUBMODULES_TOKEN = fine-grained token, Contents: read-only on the carmonai module repos.
+      # CARMONAI_TOKEN = fine-grained token, Contents: read-only on the carmonai module repos.
       - uses: actions/checkout@v7
         with:
           submodules: recursive
-          token: ${{ secrets.SUBMODULES_TOKEN }}
+          token: ${{ secrets.CARMONAI_TOKEN }}
 
       - uses: actions/setup-java@v6
         with:
@@ -43,6 +43,7 @@ jobs:
           } > .env
 
       - name: Start the stack
+        id: stack
         working-directory: docker
         run: docker compose up -d --build --wait
 
@@ -50,12 +51,13 @@ jobs:
         working-directory: docker
         run: bash smoke.sh
 
+      # Only when the stack was started: an earlier failure leaves nothing to show or stop.
       - name: Service logs
-        if: failure()
+        if: failure() && steps.stack.outcome != 'skipped'
         working-directory: docker
         run: docker compose logs --no-color
 
       - name: Stop the stack
-        if: always()
+        if: always() && steps.stack.outcome != 'skipped'
         working-directory: docker
         run: docker compose down -v
