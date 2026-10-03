@@ -113,6 +113,7 @@ Health checking is the orchestrator's job: compose `healthcheck` and K8s probes 
 - Feign + Resilience4j: add `resilience4j-bulkhead` (the starter lacks it, so no bulkhead runs) and set `spring.cloud.circuitbreaker.resilience4j.disable-time-limiter`, `disable-thread-pool` and `enable-semaphore-default-bulkhead` to true; with the thread pool on, a downstream 4xx arrives wrapped in `ExecutionException`. Ignore `feign.FeignException$FeignClientException` in the breaker so 4xx answers don't open it.
 - Gateway security also guards the management port: permit `/actuator/health/**` and `/actuator/prometheus`.
 - `JWT_PRIVATE_KEY` must be PKCS#8: take the body of `openssl genpkey` PEM output; some openssl builds write `-outform DER` as PKCS#1.
+- Instant query parameters on a shared `@FeignClient` interface: no `@DateTimeFormat` (Feign formats through it and fails with `UnsupportedTemporalTypeException`); plain `Instant` round-trips as ISO-8601 on both sides.
 - Timeouts nest: the gateway's `response-timeout` must exceed the worst case of the service behind it, retries included.
 
 ## back/docker/compose.yaml

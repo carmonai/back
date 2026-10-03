@@ -28,3 +28,9 @@
 [submodule "api/inference-service"]
 	path = api/inference-service
 	url = https://github.com/carmonai/inference-service.git
+[submodule "api/billing"]
+	path = api/billing
+	url = https://github.com/carmonai/billing.git
+[submodule "api/billing-service"]
+	path = api/billing-service
+	url = https://github.com/carmonai/billing-service.git

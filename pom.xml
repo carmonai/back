@@ -18,6 +18,8 @@
 		<module>api/usage</module>
 		<module>api/usage-service</module>
 		<module>api/inference-service</module>
+		<module>api/billing</module>
+		<module>api/billing-service</module>
 		<module>api/gateway-service</module>
 	</modules>
 

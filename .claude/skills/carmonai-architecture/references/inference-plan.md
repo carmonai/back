@@ -24,6 +24,14 @@ Revision 2, 2026-10-02. Revision 1 was reviewed by one subagent per topic; their
 - `--kv-cache-dtype fp8`: with bf16 the KV cache (0.44 GiB) couldn't hold one 4096-token request; FP8 holds 5,888 tokens. Quality impact to check in the optimization backlog (§13).
 - The engine port of vLLM stays internal like llama.cpp; the admission caps from these numbers are phase 5 work.
 
+**Phase 4 built 2026-10-03** (log: [phase-4-progress.md](phase-4-progress.md)): billing-service (schema `billing`) bills sealed usage windows into an append-only ledger in micro-BRL, keeps a per-organization balance in the same transaction, and flags `no_credit:{org}` in Valkey when `balance + credit_limit ≤ 0`; the gateway answers `/v1` with 402 `insufficient_balance` while the flag is set. Credit comes from an internal grant (`POST /billing/grants`, idempotent). usage-service gained `GET /usage/windows/next?after=` for the debit job. Deviations, on purpose:
+- Append-only is enforced by triggers (UPDATE/DELETE/TRUNCATE refused on `ledger_entry` and `price`; new prices must start in the future), not by a second DB role: one DB user in the prototype. Roles when a shared DB exists.
+- No customer-facing balance endpoint (no console yet); the smoke test reads balances with psql.
+- Compose runs 10 s usage windows (2 s grace, debit every 2 s) so billing shows within seconds; service defaults stay 5 min / 60 s.
+- A new organization can call `/v1` until its first debit (no balance row, no flag); the overshoot is at most one window of usage. Trial credit on org creation is a later decision.
+- Flags are synced after every debit and grant, plus a reconciliation every 10 min that re-syncs all flags and logs (ids only) any balance that differs from the sum of its ledger; it never fixes anything itself.
+- Seeded prices are placeholders, not commercial prices.
+
 **Update 2026-10-03:** user accepted the §12 recommendations; the prototype runs locally on the laptop's RTX 3050 6 GB (no free cloud GPU needed); one repo per module stays.
 
 **What changed from revision 1:** prototype on a local GPU with `Qwen3-4B-Instruct-2507` (4-bit); Kafka, outbox and Pix deferred (usage goes over HTTP, credits granted manually); token limits and shedding moved from the gateway to inference-service; tier priority alone was found not to protect enterprise, so capacity is reserved per tier; three billing bugs fixed (cancelled streams, partition dedupe, batch retries); phase 0 cut to tests + CI; Valkey instead of Redis; a real-engine phase added before admission work; engine endpoints outside `/v1` found unauthenticated; §9 rewritten with enforceable no-content-in-logs guards and a canary check, the Marco Civil access log, CSAM reporting, controller vs operator incident deadlines, and a checklist for before real customer data.

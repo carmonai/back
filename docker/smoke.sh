@@ -59,6 +59,13 @@ expect 404 "${A[@]}" "$G/auth/jwks"
 ## Organizations
 expect 201 "${A[@]}" "${J[@]}" -X POST "$G/organizations" -d '{"name":"Smoke Org"}'
 org=$(json id)
+
+# Internal endpoints have no gateway route: the smoke test reaches them from inside the network (the
+# llama container has curl). Prepaid credit (R$10, in micro-BRL) pays for the chats below.
+internal() { "${DC[@]}" exec -T llama curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' "$@"; }
+grant() { internal -X POST http://billing:8080/billing/grants -d "{\"organizationId\":\"$1\",\"amountMicroBrl\":$2,\"reason\":\"smoke\",\"idempotencyKey\":\"$3\"}"; }
+code=$(grant "$org" 10000000 smoke-start)
+[[ $code == 200 ]] && echo "ok   200  R\$10 of credit granted (internal)" || { echo "FAIL credit grant got $code"; exit 1; }
 expect 200 "${A[@]}" "$G/organizations"
 expect 200 "${A[@]}" "$G/organizations/$org"
 expect 404 "${A[@]}" "$G/organizations/$org/tenant"                 # internal
@@ -170,6 +177,38 @@ leaks=$( { "${DC[@]}" logs --no-color 2>&1; "${DC[@]}" exec -T db sh -c 'pg_dump
 [[ $leaks == 0 ]] && echo "ok   the canary, bearer headers and the API key are in no log and nowhere in the database" \
   || { echo "FAIL $leaks lines leak the canary, a bearer header or the key"; exit 1; }
 
+## Money: sealed usage windows are billed, and a used-up balance gets 402 until credit is added
+balance=""
+for _ in $(seq 60); do
+  balance=$(sql "SELECT amount FROM billing.balance WHERE organization_id = '$org'" | tr -d '\r')
+  [[ -n $balance && $balance -lt 10000000 ]] && break
+  sleep 1
+done
+[[ -n $balance && $balance -lt 10000000 ]] && echo "ok   usage billed: R\$10 credit is now $balance micro-BRL" \
+  || { echo "FAIL the usage was not billed (balance '$balance')"; exit 1; }
+same=$(sql "SELECT (SELECT amount FROM billing.balance WHERE organization_id = '$org') = (SELECT sum(amount) FROM billing.ledger_entry WHERE organization_id = '$org')" | tr -d '\r')
+[[ $same == t ]] && echo "ok   balance = sum of the ledger" || { echo "FAIL balance differs from the ledger"; exit 1; }
+
+# A second organization gets 1 micro-BRL: one chat uses it up, then /v1 answers 402 until a grant.
+expect 201 "${A[@]}" "${J[@]}" -X POST "$G/organizations" -d '{"name":"Smoke Tiny"}'
+tiny=$(json id)
+expect 201 "${A[@]}" "${J[@]}" -X POST "$G/organizations/$tiny/api-keys" -d '{"name":"tiny"}'
+K3=(-H "Authorization: Bearer $(json key)")
+code=$(grant "$tiny" 1 tiny-start)
+[[ $code == 200 ]] || { echo "FAIL tiny grant got $code"; exit 1; }
+expect 200 "${K3[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "$(chat 'Write two sentences about the sea.' 64)"
+code=""
+for _ in $(seq 60); do
+  code=$(curl -s -o "$BODY" -w '%{http_code}' "${K3[@]}" "$G/v1/models")
+  [[ $code == 402 ]] && break
+  sleep 1
+done
+[[ $code == 402 ]] && grep -q '"insufficient_balance"' "$BODY" && echo "ok   402  balance used up, /v1 refused" \
+  || { echo "FAIL expected 402 after the balance ran out, got $code"; cat "$BODY"; exit 1; }
+code=$(grant "$tiny" 1000000 tiny-topup)
+[[ $code == 200 ]] || { echo "FAIL top-up grant got $code"; exit 1; }
+expect 200 "${K3[@]}" "$G/v1/models"                                 # credit back: allowed at once
+
 ## Someone else's organization is invisible to a stranger
 first_token=$token
 first_email=$email
@@ -182,7 +221,8 @@ token=$first_token
 
 ## Erasure waits until no open organization would be left without an owner
 expect 409 "${A[@]}" -X DELETE "$G/accounts/$id"
-expect 204 "${A[@]}" -X DELETE "$G/organizations/$org"               # close it
+expect 204 "${A[@]}" -X DELETE "$G/organizations/$org"               # close both
+expect 204 "${A[@]}" -X DELETE "$G/organizations/$tiny"
 expect 204 "${A[@]}" -X DELETE "$G/accounts/$id"
 expect 404 "${A[@]}" "$G/accounts/$id"
 expect 401 "${J[@]}" -X POST "$G/auth/login" -d "{\"email\":\"$first_email\",\"password\":\"$pass\"}"   # erased: gone
