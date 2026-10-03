@@ -9,6 +9,18 @@ x-readiness: &readiness
   retries: 30
   start_period: 20s
 
+x-database: &database
+  DATABASE_HOST: db
+  DATABASE_PORT: 5432
+  DATABASE_DB: ${DB_NAME}
+  DATABASE_USERNAME: ${DB_USER}
+  DATABASE_PASSWORD: ${DB_PASSWORD}
+
+x-valkey: &valkey
+  VALKEY_HOST: valkey
+  VALKEY_PORT: 6379
+  VALKEY_PASSWORD: ${VALKEY_PASSWORD:?set in .env}
+
 services:
   db:
     image: postgres:17.11-bookworm@sha256:639ab7ceb90e13123085b741fb31ef493fba25463002f6da665352e7b534b652
@@ -24,14 +36,30 @@ services:
       retries: 10
     networks: [internal]
 
+  # A cache only (API-key lookups): no persistence, so a restart just empties it.
+  valkey:
+    image: valkey/valkey:9.0.6@sha256:63346cb24a61221e76bdf41acce99b3968a9fa83d8122144deab45394b27b4f2
+    command: ["sh", "-c", "exec valkey-server --requirepass \"$$VALKEY_PASSWORD\" --save '' --appendonly no"]
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:?set in .env}
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli --no-auth-warning -a \"$$VALKEY_PASSWORD\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [internal]
+
   account:
     build: ../api/account-service
-    environment:
-      DATABASE_HOST: db
-      DATABASE_PORT: 5432
-      DATABASE_DB: ${DB_NAME}
-      DATABASE_USERNAME: ${DB_USER}
-      DATABASE_PASSWORD: ${DB_PASSWORD}
+    environment: *database
+    depends_on:
+      db: { condition: service_healthy }
+    healthcheck: *readiness
+    networks: [internal]
+
+  organization:
+    build: ../api/organization-service
+    environment: *database
     depends_on:
       db: { condition: service_healthy }
     healthcheck: *readiness
@@ -40,18 +68,25 @@ services:
   auth:
     build: ../api/auth-service
     environment:
+      <<: [*database, *valkey]
       JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY:?set in .env}
     depends_on:
+      db: { condition: service_healthy }
+      valkey: { condition: service_healthy }
       account: { condition: service_healthy }
+      organization: { condition: service_healthy }
     healthcheck: *readiness
     networks: [internal]
 
   gateway:
     build: ../api/gateway-service
     ports: ["8080:8080"]
+    environment: *valkey
     depends_on:
+      valkey: { condition: service_healthy }
       auth: { condition: service_healthy }
       account: { condition: service_healthy }
+      organization: { condition: service_healthy }
     healthcheck: *readiness
     networks: [internal]
 

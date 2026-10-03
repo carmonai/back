@@ -2,6 +2,14 @@
 
 Revision 2, 2026-10-02. Revision 1 was reviewed by one subagent per topic; their raw findings are in [plan-review-2026-10-02.md](plan-review-2026-10-02.md). Nothing here is built. ❓ marks a decision still open; the recommendation comes first.
 
+**Progress:** phase 0 merged 2026-10-03 (CI green). Phase 1 built 2026-10-03 (organization + organization-service, API keys in auth-service, Valkey, gateway `/v1` key chain, erasure via organization-service); deviations from the §11 row, on purpose:
+- `ApiKey.created_by` dropped: nothing reads it until audit (phase 7), and keeping it would make erasure call auth-service too.
+- Gateway flood brake stays the in-memory per-replica limiter (now keyed by any principal, fixing the API-key bug); Valkey-backed limiting comes with a second gateway replica or with the phase-5 token buckets.
+- Closing or suspending an organization reaches its keys within the gateway's 60 s cache TTL (revocation itself is immediate).
+- `DELETE /organizations/{id}` (owner: status `closed`) added, because erasure needs a way out for a sole owner.
+- `/v1` hardening of §3 step 4 (Transfer-Encoding, key-like query strings) moves to phase 2, with the inference route.
+- Console sessions, invitations, email verification and roles beyond owner stay deferred (tenancy review: slices S, T, P).
+
 **Update 2026-10-03:** user accepted the §12 recommendations; the prototype runs locally on the laptop's RTX 3050 6 GB (no free cloud GPU needed); one repo per module stays.
 
 **What changed from revision 1:** prototype on a local GPU with `Qwen3-4B-Instruct-2507` (4-bit); Kafka, outbox and Pix deferred (usage goes over HTTP, credits granted manually); token limits and shedding moved from the gateway to inference-service; tier priority alone was found not to protect enterprise, so capacity is reserved per tier; three billing bugs fixed (cancelled streams, partition dedupe, batch retries); phase 0 cut to tests + CI; Valkey instead of Redis; a real-engine phase added before admission work; engine endpoints outside `/v1` found unauthenticated; §9 rewritten with enforceable no-content-in-logs guards and a canary check, the Marco Civil access log, CSAM reporting, controller vs operator incident deadlines, and a checklist for before real customer data.

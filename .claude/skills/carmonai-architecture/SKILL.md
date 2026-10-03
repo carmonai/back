@@ -7,7 +7,7 @@ description: Carmonai architecture rules — module split, layering, security, r
 
 Source: the Insper "Platforms, Microservices, DevOps and APIs" course (2026.2 Classes + Hands-on; code in `repo-classes/pma.261*`). Its structure binds us; the **hardening overrides** below win where they conflict. Before inventing a pattern, find the matching page in [references/insper-map.md](references/insper-map.md) and follow it.
 
-Scope today: account, auth, gateway. Inference has a draft plan under review — [references/inference-plan.md](references/inference-plan.md) (with the `batch-inference-design` skill behind it); build nothing from it until the user approves.
+Scope today: account, auth, organization, gateway. Inference follows [references/inference-plan.md](references/inference-plan.md) (approved 2026-10-03; progress and deviations at its top; the `batch-inference-design` skill behind it).
 
 ## Shape
 
