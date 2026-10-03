@@ -123,6 +123,9 @@ Health checking is the orchestrator's job: compose `healthcheck` and K8s probes 
 - Scripts that pass container paths from Git Bash (`docker compose exec svc touch /tmp/x`): prefix that one call with `MSYS_NO_PATHCONV=1`, or MSYS rewrites `/tmp/x` into a Windows path. Not globally: Windows curl then can't open `-o /dev/null` (exit 23).
 - vLLM's finish counters (`request_success_total`, `request_prompt_tokens_count`) skip aborted requests, even with `finished_reason="abort"` listed: a cancelled request vanishes from them. `num_requests_running` shows the abort.
 - Reactor `bufferTimeout(size, time)` in front of a slow consumer (`concatMap`): a timer flush with no demand throws `OverflowException` and kills the pipeline for good. Use `bufferTimeout(size, time, true)` (fair backpressure).
+- Gateway `WebFilter` outside the security chain (e.g. an access log that must see refused requests too): `exchange.getPrincipal()` is empty there; pass the caller's ids through exchange attributes set further in.
+- Spring Cloud Gateway appends the routed response's headers to what a filter already set: set a response header in `beforeCommit` to have exactly one.
+- A separate log file next to Boot's structured console logging: `logback-spring.xml` including `defaults.xml` + `console-appender.xml` (keeps `logging.structured.*`), plus an appender with `org.springframework.boot.logging.logback.StructuredLogEncoder` (`<format>ecs</format>`) for the file; key-value pairs (`log.atInfo().addKeyValue(…)`) become JSON fields. A named volume mounted on a directory the image creates (`install -d -o app`) keeps that ownership.
 - Timeouts nest: the gateway's `response-timeout` must exceed the worst case of the service behind it, retries included.
 
 ## back/docker/compose.yaml
