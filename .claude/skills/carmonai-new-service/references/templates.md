@@ -1,0 +1,146 @@
+# Templates
+
+Artifact names and versions: take them from `back/api/account/pom.xml` and confirm with `mvn verify` (Spring Boot 4 renamed starters, e.g. `starter-web` → `starter-webmvc`).
+
+## Service pom — additions to the library pom
+
+Copy parent, properties and compiler plugin from `back/api/account/pom.xml`; set artifactId `<name>-service`. Add:
+
+- `spring-boot-starter-webmvc`, `spring-boot-starter-data-jpa`, `org.postgresql:postgresql`
+- `flyway-core` + `flyway-database-postgresql`
+- `spring-boot-starter-actuator`, `micrometer-registry-prometheus` (runtime)
+- `spring-cloud-starter-circuitbreaker-resilience4j`
+- `spring-security-crypto` + `org.bouncycastle:bcprov-jdk18on` (account-service only)
+- the library: `ai.carmonai:<name>:${project.version}`
+- `spring-boot-maven-plugin` excluding lombok
+- tests: `spring-boot-starter-test` (test); with a DB also `org.testcontainers:testcontainers-postgresql` (test, Testcontainers 2.x: class `org.testcontainers.postgresql.PostgreSQLContainer`) and the `maven-failsafe-plugin`, so `*IT` classes run in `mvn verify` but not in `mvn package`
+
+## Tests
+
+- Plain JUnit, no mocks, for logic with branches (examples: `RateLimitFilterTest`, `IdempotentRetryerTest`, `JwtServiceTest`).
+- One `XServiceIT` per DB service, modelled on `back/api/account-service/src/test/java/ai/carmonai/account/AccountServiceIT.java`:
+  - a static Postgres container pinned to the compose digest; `@DynamicPropertySource` feeds the same `DATABASE_*` env names compose sets, so the real datasource URL is under test;
+  - `@SpringBootTest(webEnvironment = RANDOM_PORT, properties = "management.server.port=0")`;
+  - the service is called through its library's Feign interface with `new FeignClientBuilder(context).forType(XController.class, "x-it").url("http://localhost:" + port).build()`: that is the Resource/Feign contract check;
+  - one test that hits a DB constraint directly with `JdbcTemplate`.
+- Money and security paths get one integration test each.
+
+## application.yaml
+
+```yaml
+server:
+  port: 8080
+spring:
+  application:
+    name: <name>
+  datasource:
+    url: jdbc:postgresql://${DATABASE_HOST}:${DATABASE_PORT}/${DATABASE_DB}
+    username: ${DATABASE_USERNAME}
+    password: ${DATABASE_PASSWORD}
+  flyway:
+    baseline-on-migrate: true
+    schemas: <schema>            # aggregate plural, e.g. accounts
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        default_schema: <schema>
+  cloud:
+    openfeign:
+      circuitbreaker:
+        enabled: true
+      client:
+        config:
+          default:
+            connect-timeout: 1000   # starting values; tune per dependency
+            read-timeout: 3000
+management:
+  server:
+    port: 8081                      # never published, never routed
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+logging:
+  structured:
+    format:
+      console: ecs                  # JSON lines on stdout; ids only, never request bodies
+```
+
+## Dockerfile
+
+CI builds the jar first (`mvn verify` from `back/`), which resolves the library; the image only packages it. Java 25 LTS runtime: `eclipse-temurin:25-jre-noble` pinned by digest (copy the `FROM` lines from an existing service; refresh with `docker buildx imagetools inspect`).
+
+```dockerfile
+FROM eclipse-temurin:<25-jre-noble-pinned> AS builder
+WORKDIR /builder
+COPY target/*.jar application.jar
+RUN java -Djarmode=tools -jar application.jar extract --layers --destination extracted
+
+FROM eclipse-temurin:<25-jre-noble-pinned>
+RUN useradd --system --uid 10001 app
+WORKDIR /application
+COPY --from=builder --chown=app /builder/extracted/dependencies/ ./
+COPY --from=builder --chown=app /builder/extracted/spring-boot-loader/ ./
+COPY --from=builder --chown=app /builder/extracted/snapshot-dependencies/ ./
+COPY --from=builder --chown=app /builder/extracted/application/ ./
+USER app
+EXPOSE 8080
+ENTRYPOINT ["java", "-jar", "application.jar"]
+```
+
+Health checking is the orchestrator's job: compose `healthcheck` and K8s probes call the actuator on 8081. The JRE image has no curl; compose probes with bash's `/dev/tcp` (see `x-readiness` in `back/docker/compose.yaml`).
+
+## Pitfalls already hit
+
+- Lombok: Boot 4.1 manages 1.18.46, which fails when the build JDK is 27 (the local machine has 24 and 27, no 25); every pom with Lombok sets `<lombok.version>1.18.48</lombok.version>`. Code targets Java 25 (`<java.version>25</java.version>`); CI and images run 25.
+- Stale library jars: after changing `java.version` (or anything a library's jar should reflect), build with `mvn clean install -DskipTests` from `back/`. The jar plugin can skip re-creating an "up to date" jar, and `-pl <service>` without `-am` resolves the library from `~/.m2`. Symptom: `Failed to read candidate component class` at startup (class file too new for the runtime).
+- Feign + Resilience4j: add `resilience4j-bulkhead` (the starter lacks it, so no bulkhead runs) and set `spring.cloud.circuitbreaker.resilience4j.disable-time-limiter`, `disable-thread-pool` and `enable-semaphore-default-bulkhead` to true; with the thread pool on, a downstream 4xx arrives wrapped in `ExecutionException`. Ignore `feign.FeignException$FeignClientException` in the breaker so 4xx answers don't open it.
+- Gateway security also guards the management port: permit `/actuator/health/**` and `/actuator/prometheus`.
+- `JWT_PRIVATE_KEY` must be PKCS#8: take the body of `openssl genpkey` PEM output; some openssl builds write `-outform DER` as PKCS#1.
+- Timeouts nest: the gateway's `response-timeout` must exceed the worst case of the service behind it, retries included.
+
+## back/docker/compose.yaml
+
+Service names are hostnames (`account`, `auth`, `gateway`), because the Feign clients use `http://<name>:8080`.
+
+```yaml
+name: carmonai
+services:
+  db:
+    image: postgres:17.<pinned>
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    volumes: [db-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+    networks: [internal]
+  account:
+    build: ../api/account-service
+    environment:
+      DATABASE_HOST: db
+      DATABASE_PORT: 5432
+      DATABASE_DB: ${DB_NAME}
+      DATABASE_USERNAME: ${DB_USER}
+      DATABASE_PASSWORD: ${DB_PASSWORD}
+    depends_on:
+      db: { condition: service_healthy }
+    networks: [internal]
+  gateway:
+    build: ../api/gateway-service
+    ports: ["8080:8080"]
+    networks: [internal]
+networks:
+  internal: {}
+volumes:
+  db-data: {}
+```
+
+`.env` stays untracked; commit `.env.example` with placeholder values only. No default passwords anywhere.

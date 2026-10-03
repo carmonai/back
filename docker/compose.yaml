@@ -1,0 +1,62 @@
+# Build the jars first: mvn package (from back/). Secrets come from .env (see .env.example).
+name: carmonai
+
+x-readiness: &readiness
+  # No curl in the JRE image: bash's /dev/tcp asks the actuator on the management port.
+  test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081 && printf 'GET /actuator/health/readiness HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+  interval: 5s
+  timeout: 3s
+  retries: 30
+  start_period: 20s
+
+services:
+  db:
+    image: postgres:17.11-bookworm@sha256:639ab7ceb90e13123085b741fb31ef493fba25463002f6da665352e7b534b652
+    environment:
+      POSTGRES_USER: ${DB_USER:?set in .env}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set in .env}
+      POSTGRES_DB: ${DB_NAME:?set in .env}
+    volumes: [db-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [internal]
+
+  account:
+    build: ../api/account-service
+    environment:
+      DATABASE_HOST: db
+      DATABASE_PORT: 5432
+      DATABASE_DB: ${DB_NAME}
+      DATABASE_USERNAME: ${DB_USER}
+      DATABASE_PASSWORD: ${DB_PASSWORD}
+    depends_on:
+      db: { condition: service_healthy }
+    healthcheck: *readiness
+    networks: [internal]
+
+  auth:
+    build: ../api/auth-service
+    environment:
+      JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY:?set in .env}
+    depends_on:
+      account: { condition: service_healthy }
+    healthcheck: *readiness
+    networks: [internal]
+
+  gateway:
+    build: ../api/gateway-service
+    ports: ["8080:8080"]
+    depends_on:
+      auth: { condition: service_healthy }
+      account: { condition: service_healthy }
+    healthcheck: *readiness
+    networks: [internal]
+
+networks:
+  internal: {}
+
+volumes:
+  db-data: {}
