@@ -15,12 +15,20 @@ jobs:
     runs-on: ubuntu-latest   # Docker preinstalled; Testcontainers needs a Linux runner
     timeout-minutes: 30
     steps:
-      # The modules are private sibling repos: GITHUB_TOKEN can't read them.
-      # CARMONAI_TOKEN = fine-grained token, Contents: read-only on the carmonai module repos.
+      # back itself, with the default GITHUB_TOKEN.
       - uses: actions/checkout@v7
         with:
-          submodules: recursive
-          token: ${{ secrets.CARMONAI_TOKEN }}
+          persist-credentials: false
+
+      # The modules are private sibling repos GITHUB_TOKEN can't read. CARMONAI_TOKEN is a
+      # fine-grained token, Contents: read-only on the module repos only (not back). The -c
+      # header reaches the submodule clones through GIT_CONFIG_PARAMETERS and is never echoed.
+      - name: Fetch the modules
+        env:
+          TOKEN: ${{ secrets.CARMONAI_TOKEN }}
+        run: |
+          auth=$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" submodule update --init --recursive
 
       - uses: actions/setup-java@v6
         with:
