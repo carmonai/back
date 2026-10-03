@@ -98,11 +98,28 @@ services:
       start_period: 600s
     networks: [internal]
 
+  # The prototype bills in 10 s windows so a debit is visible within seconds (service defaults: 5 min, 60 s).
   usage:
     build: ../api/usage-service
-    environment: *database
+    environment:
+      <<: *database
+      CARMONAI_USAGE_WINDOW: 10s
+      CARMONAI_USAGE_GRACE: 2s
+      CARMONAI_USAGE_SEAL_EVERY: 2s
     depends_on:
       db: { condition: service_healthy }
+    healthcheck: *readiness
+    networks: [internal]
+
+  billing:
+    build: ../api/billing-service
+    environment:
+      <<: [*database, *valkey]
+      CARMONAI_BILLING_DEBIT_EVERY: 2s
+    depends_on:
+      db: { condition: service_healthy }
+      valkey: { condition: service_healthy }
+      usage: { condition: service_healthy }
     healthcheck: *readiness
     networks: [internal]
 
