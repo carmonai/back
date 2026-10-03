@@ -159,6 +159,11 @@ if [[ $ENGINE == vllm ]]; then
   echo "ok   vLLM's port is not published"
 fi
 
+# One request id from the gateway to the answer and the usage event (any client copy is replaced).
+rid=$(curl -s -D - -o /dev/null "${K2[@]}" "${J[@]}" -H 'X-Request-Id: client-chosen' -X POST "$G/v1/chat/completions" -d "$(chat 'Say hi.' 8)" \
+  | sed -nE 's/^x-request-id: ([0-9a-f-]{36}).*/\1/ip' | head -1)
+[[ -n $rid ]] && echo "ok   200  X-Request-Id $rid (the gateway's)" || { echo "FAIL no gateway request id"; exit 1; }
+
 ## Admission: rate-limit headers, and each tier only gets its share of the engine
 remaining=$(curl -s -D - -o /dev/null "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "$(chat 'Say hi.' 8)" | sed -nE 's/^x-ratelimit-remaining-requests: ([0-9]+).*/\1/ip')
 [[ -n $remaining ]] && echo "ok   200  x-ratelimit-remaining-requests: $remaining" || { echo "FAIL no rate-limit headers"; exit 1; }
@@ -236,10 +241,17 @@ rm -f "$big"
 curl -sN --max-time 1 "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "$(chat "$canary Write a long story." 500 ',"stream":true')" >/dev/null || true
 expect 400 "${K2[@]}" "$G/v1/models?api_key=cmn_test_$canary"
 sleep 2   # let batches and logs flush
-leaks=$( { "${DC[@]}" logs --no-color 2>&1; "${DC[@]}" exec -T db sh -c 'pg_dumpall -U "$POSTGRES_USER"'; } \
-  | grep -cF -e "$canary" -e "Bearer " -e "$key2" || true)
-[[ $leaks == 0 ]] && echo "ok   the canary, bearer headers and the API key are in no log and nowhere in the database" \
-  || { echo "FAIL $leaks lines leak the canary, a bearer header or the key"; exit 1; }
+access_log() { MSYS_NO_PATHCONV=1 "${DC[@]}" exec -T gateway sh -c 'cat /var/log/carmonai/access.log'; }
+leaks=$( { "${DC[@]}" logs --no-color 2>&1; "${DC[@]}" exec -T db sh -c 'pg_dumpall -U "$POSTGRES_USER"'; access_log; } \
+  | grep -cF -e "$canary" -e "Bearer " -e "$key2" -e "api_key=" || true)
+[[ $leaks == 0 ]] && echo "ok   the canary, bearer headers, the API key and query strings are in no log (access log included) and nowhere in the database" \
+  || { echo "FAIL $leaks lines leak the canary, a bearer header, the key or a query string"; exit 1; }
+# Marco Civil access log: the request above, with its ids, in the gateway's own file (not on stdout).
+grep -q "$rid" <(access_log) && grep "$rid" <(access_log) | grep -q "\"organization_id\":\"$org\"" \
+  && echo "ok   access log: request $rid with its organization and key" || { echo "FAIL request $rid not in the access log"; exit 1; }
+"${DC[@]}" logs --no-color gateway 2>&1 | grep -q "$rid" && { echo "FAIL the access log reached stdout"; exit 1; }
+[[ $(sql "SELECT count(*) FROM usage.usage_event WHERE request_id = '$rid'" | tr -d '\r') == 1 ]] \
+  && echo "ok   usage event carries the same request id" || { echo "FAIL usage has no event for $rid"; exit 1; }
 
 ## Money: sealed usage windows are billed, and a used-up balance gets 402 until credit is added
 balance=""
@@ -273,6 +285,11 @@ code=$(grant "$tiny" 1000000 tiny-topup)
 [[ $code == 200 ]] || { echo "FAIL top-up grant got $code"; exit 1; }
 expect 200 "${K3[@]}" "$G/v1/models"                                 # credit back: allowed at once
 
+## LGPD access: the account and its organizations, to its owner only
+expect 200 "${A[@]}" "$G/accounts/$id/export"
+grep -q "\"email\":\"$email\"" "$BODY" && grep -q "\"id\":\"$org\"" "$BODY" && ! grep -qi 'password' "$BODY" \
+  || { echo "FAIL export content"; cat "$BODY"; exit 1; }
+
 ## Someone else's organization is invisible to a stranger
 first_token=$token
 first_email=$email
@@ -281,6 +298,7 @@ S=(-H "Authorization: Bearer $token")
 expect 404 "${S[@]}" "$G/organizations/$org"
 expect 404 "${S[@]}" "${J[@]}" -X POST "$G/organizations/$org/api-keys" -d '{"name":"x"}'
 expect 404 "${S[@]}" -X DELETE "$G/organizations/$org"
+expect 403 "${S[@]}" "$G/accounts/$id/export"
 token=$first_token
 
 ## Erasure waits until no open organization would be left without an owner
@@ -288,6 +306,14 @@ expect 409 "${A[@]}" -X DELETE "$G/accounts/$id"
 expect 204 "${A[@]}" -X DELETE "$G/organizations/$org"               # close all three
 expect 204 "${A[@]}" -X DELETE "$G/organizations/$tiny"
 expect 204 "${A[@]}" -X DELETE "$G/organizations/$corp"
+# Closing deletes the organization's batch files (the batch section left its output and error files).
+files=""
+for _ in $(seq 30); do
+  files=$(sql "SELECT count(*) FROM batch.file WHERE organization_id = '$org'" | tr -d '\r')
+  [[ $files == 0 ]] && break
+  sleep 1
+done
+[[ $files == 0 ]] && echo "ok   closing the organization erased its batch files" || { echo "FAIL $files batch files left after closing"; exit 1; }
 expect 204 "${A[@]}" -X DELETE "$G/accounts/$id"
 expect 404 "${A[@]}" "$G/accounts/$id"
 expect 401 "${J[@]}" -X POST "$G/auth/login" -d "{\"email\":\"$first_email\",\"password\":\"$pass\"}"   # erased: gone
