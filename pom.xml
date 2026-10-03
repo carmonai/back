@@ -13,6 +13,8 @@
 		<module>api/account-service</module>
 		<module>api/auth</module>
 		<module>api/auth-service</module>
+		<module>api/organization</module>
+		<module>api/organization-service</module>
 		<module>api/gateway-service</module>
 	</modules>
 

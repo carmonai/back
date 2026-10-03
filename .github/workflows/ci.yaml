@@ -54,6 +54,7 @@ jobs:
             echo "DB_NAME=carmonai"
             echo "DB_USER=carmonai"
             echo "DB_PASSWORD=$(openssl rand -hex 24)"
+            echo "VALKEY_PASSWORD=$(openssl rand -hex 24)"
             echo "JWT_PRIVATE_KEY=$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 | grep -v -- ----- | tr -d '\r\n')"
           } > .env
 

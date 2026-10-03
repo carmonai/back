@@ -13,3 +13,9 @@
 [submodule "api/gateway-service"]
 	path = api/gateway-service
 	url = https://github.com/carmonai/gateway-service.git
+[submodule "api/organization"]
+	path = api/organization
+	url = https://github.com/carmonai/organization.git
+[submodule "api/organization-service"]
+	path = api/organization-service
+	url = https://github.com/carmonai/organization-service.git
