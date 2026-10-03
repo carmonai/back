@@ -10,6 +10,15 @@ Revision 2, 2026-10-02. Revision 1 was reviewed by one subagent per topic; their
 - `/v1` hardening of §3 step 4 (Transfer-Encoding, key-like query strings) moves to phase 2, with the inference route.
 - Console sessions, invitations, email verification and roles beyond owner stay deferred (tenancy review: slices S, T, P).
 
+**Phase 2 built 2026-10-03** (overnight; working log in [phase-2-progress.md](phase-2-progress.md)): inference-service relays `/v1/chat/completions` and `/v1/models` to llama.cpp + Qwen3-0.6B on CPU, usage + usage-service meter it, the gateway routes `/v1` with the hardening filter. Deviations, on purpose:
+- No traces yet: nothing to view them with; they move to phase 4 with the dashboards.
+- `event_id` is a random UUID (v4): uniqueness is all the dedupe needs.
+- usage-service uses plain JDBC, not Spring Data JPA: idempotent batch inserts (`ON CONFLICT`) and partition DDL are SQL work.
+- inference-service generates `X-Request-Id` itself and returns it (the gateway sets none yet); clients' ids are ignored.
+- llama.cpp reports usage only at the end of a stream, so a cancelled stream on the CPU engine is estimated (input = body bytes ÷ 4, output = content chunks); vLLM (phase 3) reports running usage.
+- Qwen3 thinking is turned off at the engine (`--chat-template-kwargs '{"enable_thinking":false}'`); `--reasoning-budget 0` doesn't do it in this llama.cpp build.
+- No customer-facing usage endpoint yet: the smoke test reads `usage.usage_event` directly. Billing (phase 4) reads the sealed windows.
+
 **Update 2026-10-03:** user accepted the §12 recommendations; the prototype runs locally on the laptop's RTX 3050 6 GB (no free cloud GPU needed); one repo per module stays.
 
 **What changed from revision 1:** prototype on a local GPU with `Qwen3-4B-Instruct-2507` (4-bit); Kafka, outbox and Pix deferred (usage goes over HTTP, credits granted manually); token limits and shedding moved from the gateway to inference-service; tier priority alone was found not to protect enterprise, so capacity is reserved per tier; three billing bugs fixed (cancelled streams, partition dedupe, batch retries); phase 0 cut to tests + CI; Valkey instead of Redis; a real-engine phase added before admission work; engine endpoints outside `/v1` found unauthenticated; §9 rewritten with enforceable no-content-in-logs guards and a canary check, the Marco Civil access log, CSAM reporting, controller vs operator incident deadlines, and a checklist for before real customer data.

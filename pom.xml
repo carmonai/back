@@ -15,6 +15,9 @@
 		<module>api/auth-service</module>
 		<module>api/organization</module>
 		<module>api/organization-service</module>
+		<module>api/usage</module>
+		<module>api/usage-service</module>
+		<module>api/inference-service</module>
 		<module>api/gateway-service</module>
 	</modules>
 
