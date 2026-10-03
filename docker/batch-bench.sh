@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # Phase-6 exit check on the GPU (inference-plan §11): a 10,000-line batch completes while interactive
 # traffic keeps its SLOs, and a line re-run after a crash is billed once.
-#   batch:       10k tiny lines (2 output tokens) from a standard organization
+#   batch:       10k tiny lines (2 output tokens) from a standard organization; the 10 lines just past the
+#                middle are slow (256 tokens, ~6 s) so the kill below lands mid-call
 #   interactive: 1 enterprise worker (0.5 s pause) and 1 trial worker (2 s pause), 128-token streams
-# Halfway, batch-service is killed (SIGKILL) and started again: the lines it was running roll back and run
-# again with the same usage event ids. Pass: the batch completes with every line answered, usage-service
-# holds exactly one event per line, enterprise goodput >= 95% (TTFT <= 2 s, TPOT <= 100 ms), no TTFT timeouts.
+# Halfway, while a worker holds one of the slow lines, batch-service is killed (SIGKILL) and started again:
+# the lines it was running roll back and run again. Pass: the batch completes with every line answered, vLLM
+# ran some line twice, usage-service holds exactly one event per line (the run that answered), enterprise
+# goodput >= 95% (TTFT <= 2 s, TPOT <= 100 ms), no TTFT timeouts.
 # Run after: docker compose -f compose.yaml -f compose.gpu.yaml up -d --build --wait
 set -euo pipefail
 cd "$(dirname "$0")"
+# Container paths go through MSYS_NO_PATHCONV=1: Git Bash would rewrite /tmp/... into a Windows path.
+# (Only there: curl's -o /dev/null needs the rewrite.)
 
 DC=(docker compose -f compose.yaml -f compose.gpu.yaml)
 G=http://localhost:8080
@@ -40,9 +44,12 @@ for tier in standard enterprise trial; do
 done
 B=(-H "Authorization: Bearer ${KEY[standard]}")
 
-# The batch: one tiny request per line.
+# The batch: one tiny request per line, and 10 slow ones (line indexes SLOW .. SLOW+9) just past the middle.
+SLOW=$((LINES / 2))
 for i in $(seq "$LINES"); do
-  echo "{\"custom_id\":\"line-$i\",\"method\":\"POST\",\"url\":\"/v1/chat/completions\",\"body\":{\"model\":\"$M\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with one word: $i\"}],\"max_tokens\":2}}"
+  prompt="Reply with one word: $i" tokens=2
+  (( i > SLOW && i <= SLOW + 10 )) && prompt="Count from 1 to 500, separated by commas." tokens=256
+  echo "{\"custom_id\":\"line-$i\",\"method\":\"POST\",\"url\":\"/v1/chat/completions\",\"body\":{\"model\":\"$M\",\"messages\":[{\"role\":\"user\",\"content\":\"$prompt\"}],\"max_tokens\":$tokens}}"
 done > "$RESULTS.jsonl"
 file=$(json id "$(curl -s "${B[@]}" -F purpose=batch -F "file=@-;filename=bench.jsonl" "$G/v1/files" < "$RESULTS.jsonl")")
 rm -f "$RESULTS.jsonl"
@@ -55,7 +62,8 @@ echo "bench: $LINES-line batch $batch, with enterprise and trial traffic alongsi
 
 # Interactive workers in the llama container until /tmp/stop-bench appears; one line per request:
 # tier status ttfb_s total_s output_tokens
-"${DC[@]}" exec -T llama rm -f /tmp/stop-bench
+MSYS_NO_PATHCONV=1 "${DC[@]}" exec -T llama rm -f /tmp/stop-bench
+trap 'MSYS_NO_PATHCONV=1 "${DC[@]}" exec -T llama touch /tmp/stop-bench >/dev/null 2>&1 || true' EXIT   # workers stop however this ends
 "${DC[@]}" exec -T -e ENTERPRISE="${KEY[enterprise]}" -e TRIAL="${KEY[trial]}" -e M="$M" llama bash -c '
   body="{\"model\":\"$M\",\"messages\":[{\"role\":\"user\",\"content\":\"Count from 1 to 200, separated by commas.\"}],"
   body+="\"max_tokens\":128,\"temperature\":0,\"stream\":true,\"stream_options\":{\"include_usage\":true}}"
@@ -72,7 +80,13 @@ echo "bench: $LINES-line batch $batch, with enterprise and trial traffic alongsi
   wait' > "$RESULTS" &
 workers=$!
 
-# Follow the batch; kill batch-service once, halfway.
+# Follow the batch; kill batch-service once, while a worker runs a slow line. A pending line nobody holds
+# shows up under FOR UPDATE SKIP LOCKED; one a worker is running doesn't.
+held_slow() {
+  sql "SELECT (SELECT count(*) FROM batch.batch_line WHERE batch_id = '$batch' AND line BETWEEN $SLOW AND $((SLOW + 9)) AND status = 'pending')
+    - (SELECT count(*) FROM (SELECT 1 FROM batch.batch_line WHERE batch_id = '$batch' AND line BETWEEN $SLOW AND $((SLOW + 9))
+       AND status = 'pending' FOR UPDATE SKIP LOCKED) free)"
+}
 killed=0
 status=in_progress
 while [[ $status == in_progress ]] && (( SECONDS - began < 5400 )); do
@@ -80,23 +94,31 @@ while [[ $status == in_progress ]] && (( SECONDS - began < 5400 )); do
   status=$(json status "$(curl -s "${B[@]}" "$G/v1/batches/$batch")")
   done_lines=$(sql "SELECT count(*) FROM batch.batch_line WHERE batch_id = '$batch' AND status <> 'pending'")
   printf '%5ds  %s lines done\n' $((SECONDS - began)) "${done_lines:-?}"
-  if (( killed == 0 && ${done_lines:-0} >= LINES / 2 )); then
+  if (( killed == 0 && ${done_lines:-0} >= SLOW - 300 )); then
+    for _ in $(seq 180); do
+      held=$(held_slow)
+      (( ${held:-0} > 0 )) && break
+      sleep 1
+    done
     "${DC[@]}" kill batch >/dev/null 2>&1 && "${DC[@]}" up -d --wait batch >/dev/null 2>&1
     killed=1
     echo "       batch-service killed and started again"
   fi
 done
-"${DC[@]}" exec -T llama touch /tmp/stop-bench
+MSYS_NO_PATHCONV=1 "${DC[@]}" exec -T llama touch /tmp/stop-bench
 wait "$workers" || true
 elapsed=$((SECONDS - began))
+# Each run the kill cut short is logged by inference-service (ids only) and runs again.
+reruns=$("${DC[@]}" logs --no-color --since "$start" inference 2>&1 | grep -c "batch $batch line .* cut short" || true)
 
 final=$(curl -s "${B[@]}" "$G/v1/batches/$batch")
 completed=$(sed -nE 's/.*"completed":([0-9]+).*/\1/p' <<<"$final")
 failed=$(sed -nE 's/.*"failed":([0-9]+).*/\1/p' <<<"$final")
-rows=$(sql "SELECT count(*) || ' ' || count(DISTINCT event_id) || ' ' || count(*) FILTER (WHERE status = 'cancelled') FROM usage.usage_event WHERE organization_id = '${ORG[standard]}' AND mode = 'batch'")
-read -r events distinct cut <<<"$rows"
+rows=$(sql "SELECT count(*) || ' ' || count(DISTINCT event_id) || ' ' || count(*) FILTER (WHERE status = 'ok') FROM usage.usage_event WHERE organization_id = '${ORG[standard]}' AND mode = 'batch'")
+read -r events distinct answered_events <<<"$rows"
 echo "batch: $status in ${elapsed}s ($(awk -v n="${completed:-0}" -v t="$elapsed" 'BEGIN { printf "%.1f", t ? n / t : 0 }') lines/s), ${completed:-0} answered, ${failed:-0} failed"
-echo "usage: $events batch events, $distinct distinct ids, $cut cut short by the kill and run again"
+echo "kill: $reruns line(s) cut short mid-call, run again"
+echo "usage: $events batch events, $distinct distinct ids"
 for tier in enterprise trial; do
   awk -v tier="$tier" '$1 == tier {
       n++
@@ -118,10 +140,11 @@ good=$(awk '$1 == "enterprise" { n++; if ($2 == 200 && $3 <= 2 && ($5 > 1 ? ($4 
 fails=0
 check() { if [[ $2 == 1 ]]; then echo "ok   $1"; else echo "FAIL $1"; fails=$((fails + 1)); fi; }
 check "the batch completed with every line answered" "$(( ${completed:-0} == LINES ))"
-check "one usage event per line ($events rows, $distinct ids)" "$(( events == LINES && distinct == LINES ))"
+check "one usage event per line, the run that answered ($events rows, $distinct ids, $answered_events ok)" \
+  "$(( events == LINES && distinct == LINES && answered_events == LINES ))"
 check "enterprise goodput >= 95% alongside the batch" "$good"
 check "no TTFT timeouts ($timeouts)" "$(( timeouts == 0 ))"
-(( killed == 1 && cut == 0 )) && echo "note no line was mid-call at the kill: the re-run path wasn't exercised this time"
+check "the kill cut $reruns line(s) short; they ran again and were billed once" "$(( reruns > 0 ))"
 
 # Synthetic data out again: the batch's files, the organizations, the account.
 for f in "$file" "$(json output_file_id "$final")" "$(json error_file_id "$final")"; do
