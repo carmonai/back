@@ -21,14 +21,21 @@ jobs:
           persist-credentials: false
 
       # The modules are private sibling repos GITHUB_TOKEN can't read. CARMONAI_TOKEN is a
-      # fine-grained token, Contents: read-only on the module repos only (not back). The -c
-      # header reaches the submodule clones through GIT_CONFIG_PARAMETERS and is never echoed.
+      # fine-grained token, Contents: read-only on the module repos only (not back).
       - name: Fetch the modules
         env:
           TOKEN: ${{ secrets.CARMONAI_TOKEN }}
         run: |
-          auth=$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)
-          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $auth" submodule update --init --recursive
+          # Fail fast, naming the repo the token can't read (prints status codes only).
+          for repo in $(git config -f .gitmodules --get-regexp '\.url$' | sed -E 's#.*github\.com/(.*)\.git$#\1#'); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "https://api.github.com/repos/$repo")
+            echo "$repo: $code"
+            [ "$code" = 200 ] || { echo "::error::CARMONAI_TOKEN cannot read $repo (HTTP $code)"; exit 1; }
+          done
+          # Global config reaches the submodule clones (git -c settings may not); removed right after.
+          git config --global url."https://x-access-token:${TOKEN}@github.com/carmonai/".insteadOf "https://github.com/carmonai/"
+          git submodule update --init --recursive
+          git config --global --remove-section url."https://x-access-token:${TOKEN}@github.com/carmonai/"
 
       - uses: actions/setup-java@v6
         with:
