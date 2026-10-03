@@ -24,6 +24,16 @@ Revision 2, 2026-10-02. Revision 1 was reviewed by one subagent per topic; their
 - `--kv-cache-dtype fp8`: with bf16 the KV cache (0.44 GiB) couldn't hold one 4096-token request; FP8 holds 5,888 tokens. Quality impact to check in the optimization backlog (§13).
 - The engine port of vLLM stays internal like llama.cpp; the admission caps from these numbers are phase 5 work.
 
+**Phase 5 built 2026-10-03** (log: [phase-5-progress.md](phase-5-progress.md)): inference-service admits each chat request before the engine: rate buckets per organization and model in Valkey (requests, input tokens, output tokens per minute; one Lua script; settled with real counts at the end), then in-flight caps in memory (trial half of C, standard 85%, enterprise C + q; plus a cap per organization), held until the response ends. Refusals are immediate 429s with `retry-after`/`retry-after-ms` (codes `rate_limit_exceeded`, `model_busy`); answers carry `x-ratelimit-*` headers. Bench through the gateway on the RTX 3050 (`docker/bench.sh`, three tiers at once): enterprise goodput 98% at C = 4 (TTFT p95 ≤ 351 ms), trial 429 p95 ≤ 16 ms (max 91 ms), no TTFT timeouts. Deviations, on purpose:
+- Limits are per tier, applied per organization and model; no "model class" axis while there are two models.
+- Buckets are checked before the caps, so a request refused by a cap still counts against the buckets (OpenAI counts unsuccessful requests too) and the cap is taken with no async gap before the engine call.
+- q = 2 on vLLM (phase 3: a longer queue pushes TTFT p95 past 2 s); `--max-num-queued-reqs 8` stays as the engine-side backstop.
+- No engine health-check loop: a dead engine already answers 503 within ~2 s (1 s connect timeout, one retry).
+- No dashboards or admission metrics yet; they come with the observability stack (platform.md). The bench prints the numbers.
+- Rate-limit headers cover requests and input tokens (OpenAI's names); no `x-ratelimit-reset-*`.
+- The bench uses curl workers, not `vllm bench serve`: a second torch process beside vLLM, llama.cpp and nine JVMs ran the 7.6 GB Docker VM out of memory.
+- The gateway's flood brake still answers 429 with an empty body on `/v1` (not OpenAI-shaped).
+
 **Phase 4 built 2026-10-03** (log: [phase-4-progress.md](phase-4-progress.md)): billing-service (schema `billing`) bills sealed usage windows into an append-only ledger in micro-BRL, keeps a per-organization balance in the same transaction, and flags `no_credit:{org}` in Valkey when `balance + credit_limit ≤ 0`; the gateway answers `/v1` with 402 `insufficient_balance` while the flag is set. Credit comes from an internal grant (`POST /billing/grants`, idempotent). usage-service gained `GET /usage/windows/next?after=` for the debit job. Deviations, on purpose:
 - Append-only is enforced by triggers (UPDATE/DELETE/TRUNCATE refused on `ledger_entry` and `price`; new prices must start in the future), not by a second DB role: one DB user in the prototype. Roles when a shared DB exists.
 - No customer-facing balance endpoint (no console yet); the smoke test reads balances with psql.

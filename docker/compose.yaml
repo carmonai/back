@@ -126,9 +126,11 @@ services:
   inference:
     build: ../api/inference-service
     environment:
+      <<: *valkey
       ENGINE_URL: http://llama:8080
       ENGINE_API_KEY: ${ENGINE_API_KEY:?set in .env}
     depends_on:
+      valkey: { condition: service_healthy }
       llama: { condition: service_healthy }
       usage: { condition: service_healthy }
     healthcheck: *readiness
