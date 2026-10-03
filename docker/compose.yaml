@@ -78,6 +78,45 @@ services:
     healthcheck: *readiness
     networks: [internal]
 
+  # CPU dev engine: llama.cpp serving Qwen3-0.6B (OpenAI-compatible). Internal only; the first start
+  # downloads the model (~640 MB) into the models volume. Thinking is off at the template, and the
+  # API key comes from env (LLAMA_API_KEY), not the command line.
+  llama:
+    image: ghcr.io/ggml-org/llama.cpp:server@sha256:970168341efef973da5666ea5c362fa428ee66ba0dfa621b0f69bf3feb3320f7
+    command: ["-hf", "Qwen/Qwen3-0.6B-GGUF:Q8_0", "--host", "0.0.0.0", "--port", "8080", "--jinja",
+              "--chat-template-kwargs", "{\"enable_thinking\":false}", "-c", "8192", "-np", "2",
+              "--metrics", "--no-slots", "--no-webui", "--alias", "carmonai/qwen3-0.6b"]
+    environment:
+      LLAMA_CACHE: /models
+      LLAMA_API_KEY: ${ENGINE_API_KEY:?set in .env}   # llama.cpp reads this one for --api-key (not LLAMA_ARG_API_KEY)
+    volumes: [models:/models]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 600s
+    networks: [internal]
+
+  usage:
+    build: ../api/usage-service
+    environment: *database
+    depends_on:
+      db: { condition: service_healthy }
+    healthcheck: *readiness
+    networks: [internal]
+
+  inference:
+    build: ../api/inference-service
+    environment:
+      ENGINE_URL: http://llama:8080
+      ENGINE_API_KEY: ${ENGINE_API_KEY:?set in .env}
+    depends_on:
+      llama: { condition: service_healthy }
+      usage: { condition: service_healthy }
+    healthcheck: *readiness
+    networks: [internal]
+
   gateway:
     build: ../api/gateway-service
     ports: ["8080:8080"]
@@ -87,6 +126,7 @@ services:
       auth: { condition: service_healthy }
       account: { condition: service_healthy }
       organization: { condition: service_healthy }
+      inference: { condition: service_healthy }
     healthcheck: *readiness
     networks: [internal]
 
@@ -95,3 +135,4 @@ networks:
 
 volumes:
   db-data: {}
+  models: {}

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end check through the gateway. Run after: docker compose up -d --build --wait
 # It ends by draining this IP's login bucket (refills 1/s): wait ~20 s before running it again.
-# It stops and restarts valkey once (API-key lookups must fail closed with 503).
+# It stops and restarts valkey once (API-key lookups must fail closed with 503), runs chats on the
+# CPU engine (llama.cpp + Qwen3-0.6B), and greps every log and a database dump for a canary string.
 set -euo pipefail
 G=${GATEWAY:-http://localhost:8080}
 DC=(docker compose -f "$(dirname "$0")/compose.yaml")
@@ -83,6 +84,65 @@ key2=$(json key)
 expect 503 -H "Authorization: Bearer $key2" "$G/v1/models"
 "${DC[@]}" up -d --wait valkey >/dev/null 2>&1
 expect 200 -H "Authorization: Bearer $key2" "$G/v1/models"
+
+## Inference through the gateway: llama.cpp + Qwen3-0.6B on CPU behind inference-service
+M=carmonai/qwen3-0.6b
+K2=(-H "Authorization: Bearer $key2")
+chat() { echo "{\"model\":\"$M\",\"messages\":[{\"role\":\"user\",\"content\":\"$1\"}],\"max_tokens\":$2${3:-}}"; }
+expect 200 "${K2[@]}" "$G/v1/models"
+grep -q "\"$M\"" "$BODY" || { echo "FAIL $M is not listed"; exit 1; }
+expect 200 "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "$(chat 'Say hi.' 8)"
+grep -q '"usage"' "$BODY" || { echo "FAIL no usage in the answer"; exit 1; }
+stream=$(curl -sN "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "$(chat 'Count to five.' 16 ',"stream":true')")
+events=$(grep -c '^data:' <<<"$stream" || true)
+if [[ $events -lt 3 ]] || ! grep -qE '^data: ?\[DONE\]' <<<"$stream"; then echo "FAIL stream: $events events"; exit 1; fi
+echo "ok   200  streamed $events events, ending in [DONE]"
+expect 404 "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d '{"model":"nope","messages":[{"role":"user","content":"x"}]}'
+expect 400 "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "$(chat 'x' 8 ',"n":2')"
+expect 400 "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "{\"model\":\"$M\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"image_url\",\"image_url\":{\"url\":\"http://example.com/a.png\"}}]}]}"
+expect 400 "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "$(chat 'x' 5000)"
+expect 400 "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d '{"model":'
+expect 400 "${K2[@]}" "${J[@]}" -H 'Transfer-Encoding: chunked' -X POST "$G/v1/chat/completions" -d "$(chat 'x' 8)"
+expect 400 "${K2[@]}" "$G/v1/models?api_key=cmn_test_x"
+
+# A client that hangs up stops the generation upstream, and is recorded as cancelled.
+curl -sN --max-time 2 "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "$(chat 'Write a very long story.' 1000 ',"stream":true')" >/dev/null || true
+busy=1
+for _ in $(seq 20); do
+  busy=$("${DC[@]}" exec -T llama sh -c 'curl -s -H "Authorization: Bearer $LLAMA_API_KEY" http://127.0.0.1:8080/metrics' \
+    | sed -nE 's/^llamacpp:requests_processing ([0-9.]+).*/\1/p')
+  [[ ${busy%.*} == 0 ]] && break
+  sleep 0.5
+done
+[[ ${busy%.*} == 0 ]] && echo "ok   engine idle again after the client hung up" || { echo "FAIL engine still busy ($busy)"; exit 1; }
+
+# Usage reaches usage-service once per request that reached the engine: 2 answered, 1 cancelled.
+sql() { "${DC[@]}" exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tA -c "$1"' sh "$1"; }
+usage=""
+for _ in $(seq 20); do
+  usage=$(sql "SELECT status || '=' || count(*) FROM usage.usage_event WHERE organization_id = '$org' GROUP BY status ORDER BY status" | tr -d '\r' | tr '\n' ' ')
+  [[ $usage == "cancelled=1 ok=2 " ]] && break
+  sleep 0.5
+done
+[[ $usage == "cancelled=1 ok=2 " ]] && echo "ok   usage recorded once each: $usage" || { echo "FAIL usage rows: '$usage'"; exit 1; }
+
+## Canary: prompts and keys never reach a log or the database
+canary="CANARY-$RANDOM$RANDOM"
+expect 200 "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "$(chat "Repeat exactly: $canary" 16)"
+curl -sN "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "$(chat "Repeat exactly: $canary" 16 ',"stream":true')" >/dev/null
+expect 400 "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "{\"model\":\"$M\",\"messages\":\"$canary"
+big=$(mktemp)
+chat "$canary $(head -c 70000 /dev/zero | tr '\0' x)" 8 > "$big"
+code=$(curl -s -o /dev/null -w '%{http_code}' "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" --data-binary @"$big")
+rm -f "$big"
+[[ $code == 413 ]] && echo "ok   413  over-context prompt" || { echo "FAIL over-context prompt got $code"; exit 1; }
+curl -sN --max-time 1 "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "$(chat "$canary Write a long story." 500 ',"stream":true')" >/dev/null || true
+expect 400 "${K2[@]}" "$G/v1/models?api_key=cmn_test_$canary"
+sleep 2   # let batches and logs flush
+leaks=$( { "${DC[@]}" logs --no-color 2>&1; "${DC[@]}" exec -T db sh -c 'pg_dumpall -U "$POSTGRES_USER"'; } \
+  | grep -cF -e "$canary" -e "Bearer " -e "$key2" || true)
+[[ $leaks == 0 ]] && echo "ok   the canary, bearer headers and the API key are in no log and nowhere in the database" \
+  || { echo "FAIL $leaks lines leak the canary, a bearer header or the key"; exit 1; }
 
 ## Someone else's organization is invisible to a stranger
 first_token=$token

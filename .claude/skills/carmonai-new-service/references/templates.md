@@ -100,6 +100,13 @@ Health checking is the orchestrator's job: compose `healthcheck` and K8s probes 
 
 - Lombok: Boot 4.1 manages 1.18.46, which fails when the build JDK is 27 (the local machine has 24 and 27, no 25); every pom with Lombok sets `<lombok.version>1.18.48</lombok.version>`. Code targets Java 25 (`<java.version>25</java.version>`); CI and images run 25.
 - Stale library jars: after changing `java.version` (or anything a library's jar should reflect), build with `mvn clean install -DskipTests` from `back/`. The jar plugin can skip re-creating an "up to date" jar, and `-pl <service>` without `-am` resolves the library from `~/.m2`. Symptom: `Failed to read candidate component class` at startup (class file too new for the runtime).
+- Boot 4 split the HTTP clients out: the auto-configured `WebClient.Builder` needs `spring-boot-starter-webclient` (without it: "required a bean of type WebClient$Builder").
+- Boot 4 uses Jackson 3 (`tools.jackson.databind`): `JsonNode.asString()`/`isString()` replace `asText()`/`isTextual()`; `JsonMapper` is the bean to inject.
+- Spring 7 renamed 413: use `HttpStatus.CONTENT_TOO_LARGE` (`PAYLOAD_TOO_LARGE` is a deprecated alias, and `HttpStatus.resolve(413)` returns the new name).
+- Reactor `retryWhen(Retry.max(n))` wraps the last error in "retries exhausted"; add `.onRetryExhaustedThrow((spec, signal) -> signal.failure())` so the real error maps to the right status.
+- A service that calls another one in its IT: stub the other side with the JDK's `com.sun.net.httpserver.HttpServer` (no extra dependency) and point the Feign/WebClient URL at it (libraries declare `url="${carmonai.<name>.url:http://<name>:8080}"`).
+- `MockServerHttpRequest` has no native request: code that reads one (e.g. the HTTP version) must tolerate its absence.
+- llama.cpp server: the API key env var is `LLAMA_API_KEY` (not `LLAMA_ARG_API_KEY`); always check an engine refuses a request without its key.
 - Feign + Resilience4j: add `resilience4j-bulkhead` (the starter lacks it, so no bulkhead runs) and set `spring.cloud.circuitbreaker.resilience4j.disable-time-limiter`, `disable-thread-pool` and `enable-semaphore-default-bulkhead` to true; with the thread pool on, a downstream 4xx arrives wrapped in `ExecutionException`. Ignore `feign.FeignException$FeignClientException` in the breaker so 4xx answers don't open it.
 - Gateway security also guards the management port: permit `/actuator/health/**` and `/actuator/prometheus`.
 - `JWT_PRIVATE_KEY` must be PKCS#8: take the body of `openssl genpkey` PEM output; some openssl builds write `-outform DER` as PKCS#1.
