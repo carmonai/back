@@ -117,7 +117,7 @@ expect 400 "${K2[@]}" "${J[@]}" -H 'Transfer-Encoding: chunked' -X POST "$G/v1/c
 expect 400 "${K2[@]}" "$G/v1/models?api_key=cmn_test_x"
 
 # A client that hangs up stops the generation upstream, and is recorded as cancelled.
-curl -sN --max-time 2 "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "$(chat 'Write a very long story.' 1000 ',"stream":true')" >/dev/null || true
+curl -sN --max-time 2 "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "$(chat 'Count from 1 to 1000, separated by commas.' 1000 ',"stream":true,"temperature":0')" >/dev/null || true
 # Requests the engine is generating right now, from its own metrics.
 engine_busy() {
   if [[ $ENGINE == vllm ]]; then
@@ -158,6 +158,29 @@ if [[ $ENGINE == vllm ]]; then
   if curl -s -m 2 -o /dev/null http://localhost:8000/health; then echo "FAIL vLLM is reachable from the host"; exit 1; fi
   echo "ok   vLLM's port is not published"
 fi
+
+## Admission: rate-limit headers, and each tier only gets its share of the engine
+remaining=$(curl -s -D - -o /dev/null "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "$(chat 'Say hi.' 8)" | sed -nE 's/^x-ratelimit-remaining-requests: ([0-9]+).*/\1/ip')
+[[ -n $remaining ]] && echo "ok   200  x-ratelimit-remaining-requests: $remaining" || { echo "FAIL no rate-limit headers"; exit 1; }
+# Tiers are staff-set (no API yet): an enterprise organization, its tier set before its key is first used.
+expect 201 "${A[@]}" "${J[@]}" -X POST "$G/organizations" -d '{"name":"Smoke Enterprise"}'
+corp=$(json id)
+sql "UPDATE organizations.organization SET tier = 'enterprise' WHERE id = '$corp'" >/dev/null
+expect 201 "${A[@]}" "${J[@]}" -X POST "$G/organizations/$corp/api-keys" -d '{"name":"corp"}'
+K4=(-H "Authorization: Bearer $(json key)")
+# Trial may fill half the engine's slots (llama.cpp 2 -> 1, vLLM 4 -> 2). With those taken, one more trial
+# request is refused at once, while an enterprise one still runs.
+[[ $ENGINE == vllm ]] && share=2 || share=1
+for _ in $(seq $share); do
+  curl -sN --max-time 8 "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "$(chat 'Count from 1 to 1000, separated by commas.' 1000 ',"stream":true,"temperature":0')" >/dev/null &
+done
+sleep 2
+read -r code took < <(curl -s -o "$BODY" -w '%{http_code} %{time_total}\n' "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "$(chat 'Say hi.' 8)")
+[[ $code == 429 ]] && grep -q '"model_busy"' "$BODY" && awk "BEGIN { exit !($took < 0.5) }" \
+  && echo "ok   429  trial over its share of the engine, refused in ${took}s" \
+  || { echo "FAIL trial over its share got $code in ${took}s"; cat "$BODY"; exit 1; }
+expect 200 "${K4[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "$(chat 'Say hi.' 8)"   # enterprise still served
+wait
 
 ## Canary: prompts and keys never reach a log or the database
 canary="CANARY-$RANDOM$RANDOM"
@@ -221,8 +244,9 @@ token=$first_token
 
 ## Erasure waits until no open organization would be left without an owner
 expect 409 "${A[@]}" -X DELETE "$G/accounts/$id"
-expect 204 "${A[@]}" -X DELETE "$G/organizations/$org"               # close both
+expect 204 "${A[@]}" -X DELETE "$G/organizations/$org"               # close all three
 expect 204 "${A[@]}" -X DELETE "$G/organizations/$tiny"
+expect 204 "${A[@]}" -X DELETE "$G/organizations/$corp"
 expect 204 "${A[@]}" -X DELETE "$G/accounts/$id"
 expect 404 "${A[@]}" "$G/accounts/$id"
 expect 401 "${J[@]}" -X POST "$G/auth/login" -d "{\"email\":\"$first_email\",\"password\":\"$pass\"}"   # erased: gone

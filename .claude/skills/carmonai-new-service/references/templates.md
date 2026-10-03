@@ -114,6 +114,9 @@ Health checking is the orchestrator's job: compose `healthcheck` and K8s probes 
 - Gateway security also guards the management port: permit `/actuator/health/**` and `/actuator/prometheus`.
 - `JWT_PRIVATE_KEY` must be PKCS#8: take the body of `openssl genpkey` PEM output; some openssl builds write `-outform DER` as PKCS#1.
 - Instant query parameters on a shared `@FeignClient` interface: no `@DateTimeFormat` (Feign formats through it and fails with `UnsupportedTemporalTypeException`); plain `Instant` round-trips as ISO-8601 on both sides.
+- Anything taken per request and given back at the end (a permit, a slot): `Flux/Mono.usingWhen(acquire, use, release)`. A `doFinally` on the body never runs if the client leaves before WebFlux subscribes the body, and the slot leaks.
+- vLLM with `continuous_usage_stats`: every stream chunk carries `usage`; read the last one, not the first.
+- Docker Desktop's VM (7.6 GB here) holds vLLM, llama.cpp and nine JVMs with little room left: no second Python/torch process beside them (`vllm bench serve` twice ran it out of memory, hung WSL and got vLLM OOM-killed). Load-test with curl from the llama container.
 - Timeouts nest: the gateway's `response-timeout` must exceed the worst case of the service behind it, retries included.
 
 ## back/docker/compose.yaml
