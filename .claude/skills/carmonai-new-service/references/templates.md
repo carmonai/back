@@ -126,6 +126,10 @@ Health checking is the orchestrator's job: compose `healthcheck` and K8s probes 
 - Gateway `WebFilter` outside the security chain (e.g. an access log that must see refused requests too): `exchange.getPrincipal()` is empty there; pass the caller's ids through exchange attributes set further in.
 - Spring Cloud Gateway appends the routed response's headers to what a filter already set: set a response header in `beforeCommit` to have exactly one.
 - A separate log file next to Boot's structured console logging: `logback-spring.xml` including `defaults.xml` + `console-appender.xml` (keeps `logging.structured.*`), plus an appender with `org.springframework.boot.logging.logback.StructuredLogEncoder` (`<format>ecs</format>`) for the file; key-value pairs (`log.atInfo().addKeyValue(…)`) become JSON fields. A named volume mounted on a directory the image creates (`install -d -o app`) keeps that ownership.
+- Mail in an IT: run the real Mailpit image (`GenericContainer`, ports 1025 + 8025), point `spring.mail` at it and read the links back from its API (`/api/v1/search?query=to:"…"`, `/api/v1/message/{ID}`). No mail library mock.
+- Feign has no `@CookieValue`: pass the `Cookie` header (`@RequestHeader("Cookie")`) in a shared interface.
+- `MockServerHttpRequest.header("Cookie", …)` doesn't fill `getCookies()`; Netty does. Read the header when code must work under both.
+- Shell scripts with `set -o pipefail`: never `producer | grep -q` or `| head -1` on a command that keeps writing (it dies on the broken pipe and the pipeline fails); capture into a variable first.
 - Timeouts nest: the gateway's `response-timeout` must exceed the worst case of the service behind it, retries included.
 
 ## back/docker/compose.yaml

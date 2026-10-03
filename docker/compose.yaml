@@ -49,11 +49,26 @@ services:
       retries: 10
     networks: [internal]
 
+  # Local mail catcher: account-service's verification and reset emails land here; its API (8025) stays
+  # on the internal network (smoke.sh reads the links from it).
+  mailpit:
+    image: axllent/mailpit:v1.31.4@sha256:b68349e3a014b90c5610bfb26b2ae36f3892d7b8cf25ee140c6c71c98d2fcf48
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [internal]
+
   account:
     build: ../api/account-service
-    environment: *database
+    environment:
+      <<: *database
+      MAIL_HOST: mailpit
+      CONSOLE_URL: http://localhost:3000   # where the emailed links point (the console isn't built yet)
     depends_on:
       db: { condition: service_healthy }
+      mailpit: { condition: service_healthy }
     healthcheck: *readiness
     networks: [internal]
 
@@ -153,7 +168,9 @@ services:
     build: ../api/gateway-service
     ports: ["8080:8080"]
     volumes: ["access-logs:/var/log/carmonai"]   # Marco Civil access log, 6 months (logback-spring.xml)
-    environment: *valkey
+    environment:
+      <<: *valkey
+      CONSOLE_ORIGINS: http://localhost:3000     # the only Origin allowed on login/register/refresh/logout
     depends_on:
       valkey: { condition: service_healthy }
       auth: { condition: service_healthy }

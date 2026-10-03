@@ -12,7 +12,33 @@ Working log started 2026-10-03. Plan: [inference-plan.md](inference-plan.md) §9
 - [x] `mvn clean verify` + CPU smoke green; logs clean
 - [x] Docs: plan progress/deviations, skills, templates
 - [x] Commit + push, PRs
-- [ ] Next (part b): console sessions: refresh cookie, logout, email verification, password reset (local mail catcher)
+- [x] Merged (part a)
+
+### Part b: console sessions and email flows (branches `phase-7b`: back, auth, auth-service, account, account-service, gateway-service)
+
+- [x] auth-service sessions: login sets the refresh cookie; `POST /auth/refresh` rotates it; reuse kills the session; `POST /auth/logout`; internal `DELETE /auth/sessions/accounts/{id}`; IT
+- [x] gateway: routes and permitAll for refresh/logout and the public account endpoints; only the refresh cookie reaches auth-service, only on refresh/logout; `Origin` check on POST login/register/refresh/logout
+- [x] account-service email flows: verification on register (login waits for it), password reset (also verifies, logs out everywhere), register answers the same for a known email (an email goes to the owner instead); Mailpit in compose; IT
+- [x] erasure deletes the account's sessions
+- [x] smoke + bench scripts verify their accounts through Mailpit; smoke covers refresh, reuse, logout, Origin, reset, enumeration
+- [x] `mvn clean verify` + CPU smoke green; logs clean; docs; commit + push, PRs
+
+## Design decisions, part b
+
+- **Session** (auth-service, plan §4): `session(id, account_id, token_hash SHA-256, created_at, last_used_at, expires_at)`. Login creates one and sets `__Host-carmonai-rt={id}.{secret}` (HttpOnly, Secure, SameSite=Strict, Path=/, 30 days); the access token (JWT) stays in the body. Refresh: unknown id → 401; known id with the wrong secret = a stolen, already-rotated cookie → the session is deleted, 401; past 30 days or 7 days idle → deleted, 401; else a conditional rotate (`WHERE token_hash = old`; 0 rows = a concurrent refresh → 401, session kept) and a new access token. Logout deletes the session and expires the cookie.
+- **Cookies at the gateway**: `Cookie` stays stripped on every route except `POST /auth/refresh` and `/auth/logout`, which get only the refresh cookie. `Origin`, when present, must be a configured console origin on `POST /auth/login|register|refresh|logout` (403 otherwise); absent = not a browser, no CSRF risk.
+- **Email** (account-service, `spring-boot-starter-mail`, SMTP from env; Mailpit in compose): tokens of 256 random bits, stored as SHA-256 in `account_token(token_hash, account_id, purpose, expires_at)`, single use. Verification: 24 h, sent on register; login answers 403 `email_not_verified` until then (the password was right, so nothing leaks). Reset: 1 h; `POST /accounts/password-reset {email}` always 202; confirming sets the password, marks the email verified (it proved ownership), deletes every session. Registering a known email answers the same 202 and mails the owner instead (a squatter's unverified account is taken back through a reset). A send that fails rolls the request back (503).
+- **Erasure** order: memberships, sessions (auth-service, through the `auth` library), then the account (its tokens cascade).
+
+## Notes, part b
+
+- Tests: auth-service IT 6 (+3: rotation, reuse ends the session for both copies, logout, all sessions of an account, register 202 for new and known, login 403/401); account-service IT 8 (+2, 2 changed; real Mailpit container: login 403 until verified, a link works once, reset sets the password, verifies the email and ends sessions, a squatter's unverified account is taken back by a reset, known email → 202 + email, erasure ends sessions); gateway `OriginFilterTest` and `IdentityHeadersFilterTest` (only the refresh cookie, only on refresh/logout; client identity headers dropped).
+- Smoke (CPU) reads every link from Mailpit: register 202 → login 403 → verify → login with the cookie; known email 202 + "already" email; refresh rotates; the first cookie again → 401 and the rotated one too; foreign Origin 403; logout; reset (unknown email 202, link, old password 401, the session gone, new password 200); erasure ends the last session. No emails, tokens or cookies in any service log.
+- `MockServerHttpRequest` doesn't parse a `Cookie` header into `getCookies()` (Netty does): the gateway reads the header itself, so tests and production behave alike.
+- Feign has no `@CookieValue`: the refresh and logout endpoints take the `Cookie` header in the shared interface.
+- Smoke pitfall under `set -o pipefail`: `producer | grep -q` (or `| head -1`) stops reading early, the producer (`docker compose exec`) dies on a broken pipe and the pipeline fails though grep matched. Capture first (`all=$(…)`), then grep the variable; take the first match with `sed -n '1…p'`.
+- The 202 for every registration means a typo'd email gets no feedback beyond "check your inbox"; the console will say so.
+- Not done (yet): invitations (organization membership by email), a per-email throttle on reset requests (the per-IP limiter caps them meanwhile), SMTP credentials for a real provider (the hosting decision).
 
 ## Design decisions (keep consistent when resuming)
 
