@@ -19,6 +19,11 @@ Revision 2, 2026-10-02. Revision 1 was reviewed by one subagent per topic; their
 - Qwen3 thinking is turned off at the engine (`--chat-template-kwargs '{"enable_thinking":false}'`); `--reasoning-budget 0` doesn't do it in this llama.cpp build.
 - No customer-facing usage endpoint yet: the smoke test reads `usage.usage_event` directly. Billing (phase 4) reads the sealed windows.
 
+**Phase 3 built 2026-10-03** (log: [phase-3-progress.md](phase-3-progress.md)): vLLM v0.30.0 serves Qwen3-4B-Instruct-2507 (AWQ 4-bit) on the laptop RTX 3050 6 GB through `docker/compose.gpu.yaml`; inference-service sends vLLM the tier priority (trial 20, standard 10, enterprise 0) and `cache_salt` = organization id; the smoke test passes on both engines. Measured: **C = 4** concurrent requests at ~157 output tok/s, TTFT p95 0.8 s, TPOT p95 24 ms (goodput 100%); at 8 the extra requests only queue (TTFT 4 s, goodput 10%). Deviations, on purpose:
+- `--gpu-memory-utilization 0.78` (not 0.90): Windows keeps ~1 GB of VRAM for the desktop and CUDA under WSL2 ~0.9 GiB more.
+- `--kv-cache-dtype fp8`: with bf16 the KV cache (0.44 GiB) couldn't hold one 4096-token request; FP8 holds 5,888 tokens. Quality impact to check in the optimization backlog (§13).
+- The engine port of vLLM stays internal like llama.cpp; the admission caps from these numbers are phase 5 work.
+
 **Update 2026-10-03:** user accepted the §12 recommendations; the prototype runs locally on the laptop's RTX 3050 6 GB (no free cloud GPU needed); one repo per module stays.
 
 **What changed from revision 1:** prototype on a local GPU with `Qwen3-4B-Instruct-2507` (4-bit); Kafka, outbox and Pix deferred (usage goes over HTTP, credits granted manually); token limits and shedding moved from the gateway to inference-service; tier priority alone was found not to protect enterprise, so capacity is reserved per tier; three billing bugs fixed (cancelled streams, partition dedupe, batch retries); phase 0 cut to tests + CI; Valkey instead of Redis; a real-engine phase added before admission work; engine endpoints outside `/v1` found unauthenticated; §9 rewritten with enforceable no-content-in-logs guards and a canary check, the Marco Civil access log, CSAM reporting, controller vs operator incident deadlines, and a checklist for before real customer data.
@@ -237,6 +242,16 @@ Out of scope until there is a reason: disaggregated prefill/decode, speculative 
 1. PSP (Efí, Mercado Pago and Stripe sign webhooks; Asaas only sends a token) and NFS-e provider.
 2. Retention periods, to confirm with legal.
 3. Before any outside user: legal entity, Marco Civil access-log duty, LGPD "small agent" status, whether inference is high-risk processing (counsel).
+
+## 13. Backlog
+
+- [ ] **Research and plan vLLM / inference optimizations** (asked 2026-10-03). Start from phase-3 bench numbers and measure every change with `vllm bench serve` against the goodput SLOs, never by intuition. Candidates:
+  - **Engine flags:** `--max-num-batched-tokens`, chunked prefill, prefix caching hit rate, CUDA graphs vs `--enforce-eager`, `--gpu-memory-utilization`.
+  - **Quantization:** weights (AWQ / GPTQ / FP8 where the GPU supports it) and KV cache (FP8 KV) against Portuguese quality.
+  - **Speculative decoding** (draft model or n-gram) and its effect on ITL.
+  - **Engine choice per workload** (vLLM vs SGLang).
+  - **Later, with more GPUs:** tensor parallelism, prefix-aware routing (llm-d), disaggregated prefill/decode.
+  - Output: a short plan with expected gain, cost and risk per item, and which ones change prices.
 
 ## Sources
 

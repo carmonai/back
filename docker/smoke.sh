@@ -5,7 +5,12 @@
 # CPU engine (llama.cpp + Qwen3-0.6B), and greps every log and a database dump for a canary string.
 set -euo pipefail
 G=${GATEWAY:-http://localhost:8080}
+# MODEL/ENGINE pick the engine the inference checks run against: the CPU one by default (CI), or
+# MODEL=carmonai/qwen3-4b ENGINE=vllm with the stack started from compose.yaml + compose.gpu.yaml.
+M=${MODEL:-carmonai/qwen3-0.6b}
+ENGINE=${ENGINE:-llama}
 DC=(docker compose -f "$(dirname "$0")/compose.yaml")
+[[ $ENGINE == vllm ]] && DC+=(-f "$(dirname "$0")/compose.gpu.yaml")
 BODY=$(mktemp)
 trap 'rm -f "$BODY"' EXIT
 
@@ -85,8 +90,7 @@ expect 503 -H "Authorization: Bearer $key2" "$G/v1/models"
 "${DC[@]}" up -d --wait valkey >/dev/null 2>&1
 expect 200 -H "Authorization: Bearer $key2" "$G/v1/models"
 
-## Inference through the gateway: llama.cpp + Qwen3-0.6B on CPU behind inference-service
-M=carmonai/qwen3-0.6b
+## Inference through the gateway: $M on $ENGINE, behind inference-service
 K2=(-H "Authorization: Bearer $key2")
 chat() { echo "{\"model\":\"$M\",\"messages\":[{\"role\":\"user\",\"content\":\"$1\"}],\"max_tokens\":$2${3:-}}"; }
 expect 200 "${K2[@]}" "$G/v1/models"
@@ -107,10 +111,19 @@ expect 400 "${K2[@]}" "$G/v1/models?api_key=cmn_test_x"
 
 # A client that hangs up stops the generation upstream, and is recorded as cancelled.
 curl -sN --max-time 2 "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "$(chat 'Write a very long story.' 1000 ',"stream":true')" >/dev/null || true
+# Requests the engine is generating right now, from its own metrics.
+engine_busy() {
+  if [[ $ENGINE == vllm ]]; then
+    "${DC[@]}" exec -T vllm python3 -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/metrics').read().decode())" \
+      | sed -nE 's/^vllm:num_requests_running\{[^}]*\} ([0-9.]+).*/\1/p' | head -1
+  else
+    "${DC[@]}" exec -T llama sh -c 'curl -s -H "Authorization: Bearer $LLAMA_API_KEY" http://127.0.0.1:8080/metrics' \
+      | sed -nE 's/^llamacpp:requests_processing ([0-9.]+).*/\1/p'
+  fi
+}
 busy=1
 for _ in $(seq 20); do
-  busy=$("${DC[@]}" exec -T llama sh -c 'curl -s -H "Authorization: Bearer $LLAMA_API_KEY" http://127.0.0.1:8080/metrics' \
-    | sed -nE 's/^llamacpp:requests_processing ([0-9.]+).*/\1/p')
+  busy=$(engine_busy)
   [[ ${busy%.*} == 0 ]] && break
   sleep 0.5
 done
@@ -125,6 +138,19 @@ for _ in $(seq 20); do
   sleep 0.5
 done
 [[ $usage == "cancelled=1 ok=2 " ]] && echo "ok   usage recorded once each: $usage" || { echo "FAIL usage rows: '$usage'"; exit 1; }
+cancelled=$(sql "SELECT output_tokens FROM usage.usage_event WHERE organization_id = '$org' AND status = 'cancelled'" | tr -d '\r')
+[[ ${cancelled:-0} -gt 0 ]] && echo "ok   the cancelled stream is billed for its $cancelled generated tokens" \
+  || { echo "FAIL the cancelled stream recorded no output tokens"; exit 1; }
+
+# GPU engine only: tool calls, and the engine's port stays off the host.
+if [[ $ENGINE == vllm ]]; then
+  tools='"tools":[{"type":"function","function":{"name":"get_weather","description":"Current weather in a city","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}],"tool_choice":{"type":"function","function":{"name":"get_weather"}}'
+  expect 200 "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "$(chat 'What is the weather in Recife?' 64 ",$tools")"
+  grep -q '"tool_calls"' "$BODY" && grep -q 'get_weather' "$BODY" || { echo "FAIL no tool call in the answer"; cat "$BODY"; exit 1; }
+  echo "ok   tool call returned"
+  if curl -s -m 2 -o /dev/null http://localhost:8000/health; then echo "FAIL vLLM is reachable from the host"; exit 1; fi
+  echo "ok   vLLM's port is not published"
+fi
 
 ## Canary: prompts and keys never reach a log or the database
 canary="CANARY-$RANDOM$RANDOM"
