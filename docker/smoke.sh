@@ -166,6 +166,7 @@ remaining=$(curl -s -D - -o /dev/null "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/c
 expect 201 "${A[@]}" "${J[@]}" -X POST "$G/organizations" -d '{"name":"Smoke Enterprise"}'
 corp=$(json id)
 sql "UPDATE organizations.organization SET tier = 'enterprise' WHERE id = '$corp'" >/dev/null
+[[ $(grant "$corp" 10000000 corp-start) == 200 ]] || { echo "FAIL corp credit grant"; exit 1; }
 expect 201 "${A[@]}" "${J[@]}" -X POST "$G/organizations/$corp/api-keys" -d '{"name":"corp"}'
 K4=(-H "Authorization: Bearer $(json key)")
 # Trial may fill half the engine's slots (llama.cpp 2 -> 1, vLLM 4 -> 2). With those taken, one more trial
@@ -182,7 +183,47 @@ read -r code took < <(curl -s -o "$BODY" -w '%{http_code} %{time_total}\n' "${K2
 expect 200 "${K4[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "$(chat 'Say hi.' 8)"   # enterprise still served
 wait
 
-## Canary: prompts and keys never reach a log or the database
+## Batch API: a JSONL file runs line by line at the lowest priority; the results come back as files
+bline() { echo "{\"custom_id\":\"$1\",\"method\":\"POST\",\"url\":\"/v1/chat/completions\",\"body\":{\"model\":\"$M\",\"messages\":[{\"role\":\"user\",\"content\":\"Say hi.\"}],\"max_tokens\":$2}}"; }
+input=$(mktemp)
+{ bline one 8; bline two 8; bline too-long 5000; } > "$input"
+expect 200 "${K2[@]}" -F purpose=batch -F "file=@-;filename=smoke.jsonl" "$G/v1/files" < "$input"   # stdin: no path translation on Windows
+rm -f "$input"
+input_id=$(json id)
+expect 200 "${K2[@]}" "${J[@]}" -X POST "$G/v1/batches" -d "{\"input_file_id\":\"$input_id\",\"endpoint\":\"/v1/chat/completions\",\"completion_window\":\"24h\"}"
+batch_id=$(json id)
+status=""
+for _ in $(seq 120); do
+  curl -s -o "$BODY" "${K2[@]}" "$G/v1/batches/$batch_id"
+  status=$(json status)
+  [[ $status == completed ]] && break
+  sleep 1
+done
+counts=$(sed -nE 's/.*"request_counts":\{([^}]*)\}.*/\1/p' "$BODY")
+[[ $status == completed && $counts == '"total":3,"completed":2,"failed":1' ]] && echo "ok   batch completed: $counts" \
+  || { echo "FAIL batch $status: $counts"; cat "$BODY"; exit 1; }
+output_id=$(json output_file_id)
+error_id=$(json error_file_id)
+expect 200 "${K2[@]}" "$G/v1/files/$output_id/content"
+[[ $(grep -c '"status_code":200' "$BODY") == 2 ]] && grep -q '"custom_id":"one"' "$BODY" || { echo "FAIL batch output"; cat "$BODY"; exit 1; }
+expect 200 "${K2[@]}" "$G/v1/files/$error_id/content"
+grep -q '"custom_id":"too-long".*"status_code":400' "$BODY" || { echo "FAIL batch error file"; cat "$BODY"; exit 1; }
+batch_usage=""
+for _ in $(seq 10); do
+  batch_usage=$(sql "SELECT count(*) FROM usage.usage_event WHERE organization_id = '$org' AND mode = 'batch' AND status = 'ok'" | tr -d '\r')
+  [[ $batch_usage == 2 ]] && break
+  sleep 1
+done
+[[ $batch_usage == 2 ]] && echo "ok   usage: the 2 answered lines, mode=batch" || { echo "FAIL batch usage rows: $batch_usage"; exit 1; }
+expect 404 "${K4[@]}" "$G/v1/batches/$batch_id"                       # another organization's batch
+expect 404 "${K4[@]}" "$G/v1/files/$output_id/content"                 # and its files
+expect 200 "${K2[@]}" -X DELETE "$G/v1/files/$input_id"
+expect 404 "${K2[@]}" "$G/v1/files/$input_id"
+# batch-line is batch-service's internal marker (batch prices, lowest priority): a client's copy is
+# stripped by the gateway, so this malformed one never reaches inference-service (which would answer 400).
+expect 200 "${K2[@]}" "${J[@]}" -H 'batch-line: forged' -X POST "$G/v1/chat/completions" -d "$(chat 'Say hi.' 8)"
+
+## Canary: sync prompts and keys never reach a log or the database (batch files are stored on purpose, 30 days)
 canary="CANARY-$RANDOM$RANDOM"
 expect 200 "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "$(chat "Repeat exactly: $canary" 16)"
 curl -sN "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "$(chat "Repeat exactly: $canary" 16 ',"stream":true')" >/dev/null

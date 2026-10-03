@@ -34,3 +34,6 @@
 [submodule "api/billing-service"]
 	path = api/billing-service
 	url = https://github.com/carmonai/billing-service.git
+[submodule "api/batch-service"]
+	path = api/batch-service
+	url = https://github.com/carmonai/batch-service.git

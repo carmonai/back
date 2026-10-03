@@ -117,6 +117,8 @@ Health checking is the orchestrator's job: compose `healthcheck` and K8s probes 
 - Anything taken per request and given back at the end (a permit, a slot): `Flux/Mono.usingWhen(acquire, use, release)`. A `doFinally` on the body never runs if the client leaves before WebFlux subscribes the body, and the slot leaks.
 - vLLM with `continuous_usage_stats`: every stream chunk carries `usage`; read the last one, not the first.
 - Docker Desktop's VM (7.6 GB here) holds vLLM, llama.cpp and nine JVMs with little room left: no second Python/torch process beside them (`vllm bench serve` twice ran it out of memory, hung WSL and got vLLM OOM-killed). Load-test with curl from the llama container.
+- curl uploads from Git Bash on Windows: `-F "file=@/tmp/x"` can't open the MSYS path (exit 26); send the file on stdin, `-F "file=@-;filename=x.jsonl" < /tmp/x`.
+- `mvn -pl api/<service> verify` resolves the `ai.carmonai` libraries from `~/.m2`: add `-am` to build them in the same run.
 - Timeouts nest: the gateway's `response-timeout` must exceed the worst case of the service behind it, retries included.
 
 ## back/docker/compose.yaml

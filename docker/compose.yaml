@@ -136,6 +136,16 @@ services:
     healthcheck: *readiness
     networks: [internal]
 
+  # Files and Batch API: runs batch lines through inference-service at the lowest priority.
+  batch:
+    build: ../api/batch-service
+    environment: *database
+    depends_on:
+      db: { condition: service_healthy }
+      inference: { condition: service_healthy }
+    healthcheck: *readiness
+    networks: [internal]
+
   gateway:
     build: ../api/gateway-service
     ports: ["8080:8080"]
@@ -146,6 +156,7 @@ services:
       account: { condition: service_healthy }
       organization: { condition: service_healthy }
       inference: { condition: service_healthy }
+      batch: { condition: service_healthy }
     healthcheck: *readiness
     networks: [internal]
 
