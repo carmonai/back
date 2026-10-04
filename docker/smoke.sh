@@ -296,6 +296,19 @@ expect 404 "${K2[@]}" "$G/v1/files/$input_id"
 # stripped by the gateway, so this malformed one never reaches inference-service (which would answer 400).
 expect 200 "${K2[@]}" "${J[@]}" -H 'batch-line: forged' -X POST "$G/v1/chat/completions" -d "$(chat 'Say hi.' 8)"
 
+## service_tier flex: a live request in the half-price lane (billed as mode batch); other tiers are refused
+expect 200 -D "$HDRS" "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "$(chat 'Say hi.' 8 ',"service_tier":"flex"')"
+flex_rid=$(sed -nE 's/^x-request-id: ([0-9a-f-]{36}).*/\1/ip' "$HDRS")
+expect 400 "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "$(chat 'Say hi.' 8 ',"service_tier":"priority"')"
+flex_mode=""
+for _ in $(seq 20); do
+  flex_mode=$(sql "SELECT mode FROM usage.usage_event WHERE request_id = '$flex_rid'" | tr -d '\r')
+  [[ -n $flex_mode ]] && break
+  sleep 0.5
+done
+[[ $flex_mode == batch ]] && echo "ok   the flex request is billed in the half-price lane (mode batch)" \
+  || { echo "FAIL flex request usage mode '$flex_mode'"; exit 1; }
+
 ## Canary: sync prompts and keys never reach a log, the database or Valkey's file (batch files are stored on purpose, 30 days)
 canary="CANARY-$RANDOM$RANDOM"
 expect 200 "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "$(chat "Repeat exactly: $canary" 16)"
