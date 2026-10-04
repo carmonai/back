@@ -27,10 +27,24 @@ grant() {
     -d "{\"organizationId\":\"$1\",\"amountMicroBrl\":100000000,\"reason\":\"bench\",\"idempotencyKey\":\"bench\"}"
 }
 
+# Accounts verify their email before login: follow the link Mailpit caught, as a user would.
+verify_email() {
+  local token="" id
+  for _ in $(seq 20); do
+    for id in $("${DC[@]}" exec -T llama curl -s "http://mailpit:8025/api/v1/search?query=to:%22${1/@/%40}%22" | grep -oE '"ID":"[^"]+"' | cut -d'"' -f4); do
+      token=$("${DC[@]}" exec -T llama curl -s "http://mailpit:8025/api/v1/message/$id" | grep -oE '/verify-email\?token=[A-Za-z0-9_-]+' | sed -n '1s/.*=//p')
+      [[ -n $token ]] && break 2
+    done
+    sleep 0.5
+  done
+  curl -s -o /dev/null "${J[@]}" -X POST "$G/accounts/verify-email" -d "{\"token\":\"$token\"}"
+}
+
 # Synthetic account; each tier's organization gets R$100 and its tier (staff-set, before the key is used).
 email="bench-$RANDOM$RANDOM@example.com"
 pass='correct-horse-battery'
 curl -s -o /dev/null "${J[@]}" -X POST "$G/auth/register" -d "{\"name\":\"Bench\",\"email\":\"$email\",\"password\":\"$pass\"}"
+verify_email "$email"
 token=$(json token "$(curl -s "${J[@]}" -X POST "$G/auth/login" -d "{\"email\":\"$email\",\"password\":\"$pass\"}")")
 A=(-H "Authorization: Bearer $token")
 account=$(json id "$(curl -s "${A[@]}" "$G/auth/whoami")")

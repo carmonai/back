@@ -12,14 +12,16 @@ ENGINE=${ENGINE:-llama}
 DC=(docker compose -f "$(dirname "$0")/compose.yaml")
 [[ $ENGINE == vllm ]] && DC+=(-f "$(dirname "$0")/compose.gpu.yaml")
 BODY=$(mktemp)
-trap 'rm -f "$BODY"' EXIT
+HDRS=$(mktemp)
+trap 'rm -f "$BODY" "$HDRS"' EXIT
 
-# expect <status> <curl args...>. Bearer credentials (JWTs, API keys) never reach the output.
+# expect <status> <curl args...>. Credentials (JWTs, API keys, refresh cookies, emailed tokens) never
+# reach the output.
 expect() {
   local want=$1; shift
   local got shown
   got=$(curl -s -o "$BODY" -w '%{http_code}' "$@")
-  shown=$(sed -E 's/Bearer [^ ]+/Bearer <redacted>/g' <<<"$*")
+  shown=$(sed -E 's/Bearer [^ ]+/Bearer <redacted>/g; s/(carmonai-rt=)[^ ]+/\1<redacted>/g; s/("token":")[^"]+/\1<redacted>/g' <<<"$*")
   if [[ $got != "$want" ]]; then echo "FAIL want $want got $got: $shown"; cat "$BODY"; echo; exit 1; fi
   echo "ok   $want  $shown"
 }
@@ -28,21 +30,67 @@ json() { sed -nE "s/.*\"$1\":\"([^\"]+)\".*/\1/p" "$BODY"; }
 pass='correct-horse-battery'
 J=(-H 'Content-Type: application/json')
 
-# register + login a fresh account; sets $email and $token
+# Mailpit, inside the network: every email to $1, newest first, as JSON.
+mails() {
+  local id
+  for id in $("${DC[@]}" exec -T llama curl -s "http://mailpit:8025/api/v1/search?query=to:%22${1/@/%40}%22" | grep -oE '"ID":"[^"]+"' | cut -d'"' -f4); do
+    "${DC[@]}" exec -T llama curl -s "http://mailpit:8025/api/v1/message/$id"
+  done
+}
+# The token of the newest {$2} link (verify-email, reset-password) mailed to $1. The emails are captured
+# before grepping: under pipefail, a reader that stops early (grep -q, head) fails the writer's pipe.
+mail_token() {
+  local token="" all
+  for _ in $(seq 20); do
+    all=$(mails "$1")
+    token=$(grep -oE "/$2\?token=[A-Za-z0-9_-]+" <<<"$all" | sed -n '1s/.*=//p')
+    [[ -n $token ]] && break
+    sleep 0.5
+  done
+  [[ -n $token ]] || { echo "FAIL no $2 email for $1"; exit 1; }
+  echo "$token"
+}
+# The refresh cookie the last response (-D "$HDRS") set.
+cookie() { sed -nE 's/^set-cookie: (__Host-carmonai-rt=[^;]+);.*/\1/ip' "$HDRS" | tr -d '\r' | tail -1; }
+
+# register, verify the email (Mailpit), login a fresh account; sets $email, $token and $rt (refresh cookie)
 account() {
   email="smoke-$RANDOM$RANDOM@example.com"
-  expect 201 "${J[@]}" -X POST "$G/auth/register" -d "{\"name\":\"Smoke\",\"email\":\"$email\",\"password\":\"$pass\"}"
-  expect 200 "${J[@]}" -X POST "$G/auth/login" -d "{\"email\":\"$email\",\"password\":\"$pass\"}"
+  expect 202 "${J[@]}" -X POST "$G/auth/register" -d "{\"name\":\"Smoke\",\"email\":\"$email\",\"password\":\"$pass\"}"
+  expect 403 "${J[@]}" -X POST "$G/auth/login" -d "{\"email\":\"$email\",\"password\":\"$pass\"}"   # not verified yet
+  expect 204 "${J[@]}" -X POST "$G/accounts/verify-email" -d "{\"token\":\"$(mail_token "$email" verify-email)\"}"
+  expect 200 -D "$HDRS" "${J[@]}" -X POST "$G/auth/login" -d "{\"email\":\"$email\",\"password\":\"$pass\"}"
   token=$(json token)
+  rt=$(cookie)
 }
 
 ## Accounts and login
 account
-expect 409 "${J[@]}" -X POST "$G/auth/register" -d "{\"name\":\"Smoke\",\"email\":\"${email^^}\",\"password\":\"$pass\"}"
+# A known email answers like a new one (no account enumeration); its owner gets an email instead.
+expect 202 "${J[@]}" -X POST "$G/auth/register" -d "{\"name\":\"Smoke\",\"email\":\"${email^^}\",\"password\":\"$pass\"}"
+for _ in $(seq 20); do all=$(mails "$email"); grep -q 'You already have a Carmonai account' <<<"$all" && break; sleep 0.5; done
+grep -q 'You already have a Carmonai account' <<<"$all" && echo "ok   the owner of the known email was told by email" \
+  || { echo "FAIL no 'already registered' email"; exit 1; }
 expect 400 "${J[@]}" -X POST "$G/auth/register" -d '{"name":"Smoke","email":"not-an-email","password":"correct-horse"}'
 expect 401 "${J[@]}" -X POST "$G/auth/login" -d "{\"email\":\"$email\",\"password\":\"wrong-password\"}"
 expect 401 "${J[@]}" -X POST "$G/auth/login" -d '{"email":"nobody@example.com","password":"wrong-password"}'
 A=(-H "Authorization: Bearer $token")
+
+## Console sessions: the refresh cookie rotates, a copied one ends its session, logout ends it, other sites can't post
+first=$rt
+expect 200 -D "$HDRS" -X POST "$G/auth/refresh" -H "Cookie: $first"
+rotated=$(cookie)
+[[ -n $(json token) && -n $rotated && $rotated != "$first" ]] && echo "ok   refresh: a new access token and a rotated cookie" \
+  || { echo "FAIL refresh did not rotate"; exit 1; }
+expect 401 -X POST "$G/auth/refresh" -H "Cookie: $first"                 # used twice: it was copied
+expect 401 -X POST "$G/auth/refresh" -H "Cookie: $rotated"               # so the session is gone for both
+expect 200 -D "$HDRS" "${J[@]}" -X POST "$G/auth/login" -d "{\"email\":\"$email\",\"password\":\"$pass\"}"
+live=$(cookie)
+expect 403 -H 'Origin: https://evil.example' -X POST "$G/auth/refresh" -H "Cookie: $live"
+expect 204 -H 'Origin: http://localhost:3000' -X POST "$G/auth/logout" -H "Cookie: $live"
+expect 401 -X POST "$G/auth/refresh" -H "Cookie: $live"
+expect 200 -D "$HDRS" "${J[@]}" -X POST "$G/auth/login" -d "{\"email\":\"$email\",\"password\":\"$pass\"}"
+keep=$(cookie)                                                           # ends with the account (erasure)
 
 expect 401 "$G/auth/whoami"
 expect 401 -H "Authorization: Bearer ${token}x" "$G/auth/whoami"
@@ -243,7 +291,7 @@ expect 400 "${K2[@]}" "$G/v1/models?api_key=cmn_test_$canary"
 sleep 2   # let batches and logs flush
 access_log() { MSYS_NO_PATHCONV=1 "${DC[@]}" exec -T gateway sh -c 'cat /var/log/carmonai/access.log'; }
 leaks=$( { "${DC[@]}" logs --no-color 2>&1; "${DC[@]}" exec -T db sh -c 'pg_dumpall -U "$POSTGRES_USER"'; access_log; } \
-  | grep -cF -e "$canary" -e "Bearer " -e "$key2" -e "api_key=" || true)
+  | grep -cF -e "$canary" -e "Bearer " -e "$key2" -e "api_key=" -e "${keep#*=}" || true)
 [[ $leaks == 0 ]] && echo "ok   the canary, bearer headers, the API key and query strings are in no log (access log included) and nowhere in the database" \
   || { echo "FAIL $leaks lines leak the canary, a bearer header, the key or a query string"; exit 1; }
 # Marco Civil access log: the request above, with its ids, in the gateway's own file (not on stdout).
@@ -299,6 +347,15 @@ expect 404 "${S[@]}" "$G/organizations/$org"
 expect 404 "${S[@]}" "${J[@]}" -X POST "$G/organizations/$org/api-keys" -d '{"name":"x"}'
 expect 404 "${S[@]}" -X DELETE "$G/organizations/$org"
 expect 403 "${S[@]}" "$G/accounts/$id/export"
+
+## Password reset: always 202; the link sets a new password and ends every session of the account
+expect 202 "${J[@]}" -X POST "$G/accounts/password-reset" -d '{"email":"nobody-at-all@example.com"}'
+expect 202 "${J[@]}" -X POST "$G/accounts/password-reset" -d "{\"email\":\"$email\"}"
+expect 204 "${J[@]}" -X POST "$G/accounts/password-reset/confirm" \
+  -d "{\"token\":\"$(mail_token "$email" reset-password)\",\"password\":\"a-new-smoke-passphrase\"}"
+expect 401 -X POST "$G/auth/refresh" -H "Cookie: $rt"                    # the stranger's session ended
+expect 401 "${J[@]}" -X POST "$G/auth/login" -d "{\"email\":\"$email\",\"password\":\"$pass\"}"
+expect 200 "${J[@]}" -X POST "$G/auth/login" -d "{\"email\":\"$email\",\"password\":\"a-new-smoke-passphrase\"}"
 token=$first_token
 
 ## Erasure waits until no open organization would be left without an owner
@@ -315,6 +372,7 @@ for _ in $(seq 30); do
 done
 [[ $files == 0 ]] && echo "ok   closing the organization erased its batch files" || { echo "FAIL $files batch files left after closing"; exit 1; }
 expect 204 "${A[@]}" -X DELETE "$G/accounts/$id"
+expect 401 -X POST "$G/auth/refresh" -H "Cookie: $keep"                  # its sessions ended with it
 expect 404 "${A[@]}" "$G/accounts/$id"
 expect 401 "${J[@]}" -X POST "$G/auth/login" -d "{\"email\":\"$first_email\",\"password\":\"$pass\"}"   # erased: gone
 
