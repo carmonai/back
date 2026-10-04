@@ -36,10 +36,13 @@ services:
       retries: 10
     networks: [internal]
 
-  # A cache only (API-key lookups): no persistence, so a restart just empties it.
+  # API-key lookups, credit flags and rate buckets (each rebuilt on its own when lost), and the usage
+  # events inference-service writes before relaying them to usage-service: those must survive a restart,
+  # so an append-only file, fsynced every second, in a volume (a crash of Valkey itself loses ~1 s).
   valkey:
     image: valkey/valkey:9.0.6@sha256:63346cb24a61221e76bdf41acce99b3968a9fa83d8122144deab45394b27b4f2
-    command: ["sh", "-c", "exec valkey-server --requirepass \"$$VALKEY_PASSWORD\" --save '' --appendonly no"]
+    command: ["sh", "-c", "exec valkey-server --requirepass \"$$VALKEY_PASSWORD\" --save '' --appendonly yes --appendfsync everysec"]
+    volumes: [valkey-data:/data]
     environment:
       VALKEY_PASSWORD: ${VALKEY_PASSWORD:?set in .env}
     healthcheck:
@@ -144,6 +147,7 @@ services:
       <<: *valkey
       ENGINE_URL: http://llama:8080
       ENGINE_API_KEY: ${ENGINE_API_KEY:?set in .env}
+      CARMONAI_INFERENCE_USAGECLAIMAFTER: 10s   # a killed instance's unconfirmed usage events go out within seconds (default 60 s)
     depends_on:
       valkey: { condition: service_healthy }
       llama: { condition: service_healthy }
@@ -186,5 +190,6 @@ networks:
 
 volumes:
   db-data: {}
+  valkey-data: {}
   access-logs: {}
   models: {}
