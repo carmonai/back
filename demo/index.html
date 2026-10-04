@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Carmonai workflow</title>
+<style>
+  body { font: 15px/1.45 system-ui, sans-serif; margin: 0; background: #f6f7f9; color: #07182e; }
+  #say { position: sticky; top: 0; z-index: 1; background: #07182e; color: #fff; padding: 12px 20px; font-size: 19px; min-height: 52px; }
+  #say b { color: #ffd23f; }
+  main { max-width: 980px; margin: 0 auto; padding: 16px 20px 80px; }
+  h1 { margin: 8px 0 4px; font-size: 30px; }
+  h2 { font-size: 24px; margin: 28px 0 8px; }
+  pre { background: #fff; border: 1px solid #d9dde3; padding: 10px; overflow-x: auto; font-size: 12px; margin: 6px 0 0; white-space: pre-wrap; word-break: break-word; }
+  #steps { padding-left: 0; list-style: none; }
+  #steps li { background: #fff; border: 1px solid #d9dde3; border-left: 5px solid #d9dde3; padding: 10px 14px; margin: 10px 0; }
+  #steps li.run { border-left-color: #ffd23f; }
+  #steps li.ok { border-left-color: #0ea765; }
+  #steps li.bad { border-left-color: #d33; }
+  #steps h3 { margin: 0; font-size: 19px; display: flex; justify-content: space-between; gap: 12px; }
+  #steps p { margin: 4px 0 0; color: #4a5568; }
+  #steps pre:empty { display: none; }
+  pre.narrow { display: none; }
+  @media (max-width: 640px) { pre.wide { display: none; } pre.narrow { display: block; } }
+  button { font: inherit; padding: 4px 12px; cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="say">Press <b>Run everything</b>, or run the steps one by one.</div>
+<main>
+  <h1>Carmonai: the whole workflow</h1>
+  <p>This page plays the console, on <code>localhost:3000</code> (the origin the stack trusts). It talks only to the gateway, the way a customer would. Three <code>/dev</code> helpers stand in for things a customer can't do: read the email Mailpit caught, add prepaid credit, and show a balance.</p>
+
+  <h2>How it's built</h2>
+<pre class="wide">browser / OpenAI SDK
+   │  HTTPS
+   ▼
+gateway ── checks the JWT or API key · refuses foreign Origins · rate brake · request id · access log
+   ├─ /auth, /accounts        ─► auth-service ─► account-service ─► email (Mailpit locally)
+   ├─ /organizations, keys    ─► organization-service, auth-service
+   ├─ /v1/chat/completions    ─► inference-service ─► engine: llama.cpp (CPU) or vLLM (GPU)
+   │                                 └─ usage events ─► usage-service ◄─ billing-service ─► "no credit" flag
+   └─ /v1/files, /v1/batches  ─► batch-service ─► inference-service (lowest priority)
+
+Postgres: one schema per service      Valkey: API-key cache, rate buckets, credit flags</pre>
+<pre class="narrow">browser / OpenAI SDK
+        │ HTTPS
+        ▼
+gateway: JWT or API key · Origin check
+  rate brake · request id · access log
+  ├ /auth, /accounts
+  │   → auth → account → email
+  ├ /organizations, keys
+  │   → organization, auth
+  ├ /v1/chat/completions
+  │   → inference → llama.cpp | vLLM
+  │      └ usage → usage ← billing
+  └ /v1/files, /v1/batches
+      → batch → inference (lowest)
+
+Postgres: one schema per service
+Valkey: key cache, rate buckets,
+        credit flags</pre>
+  <ul>
+    <li>One Java service per job, each with its own schema. Services call each other through shared Feign interfaces; only the gateway is public.</li>
+    <li>The gateway decides who you are. Services trust the identity headers it sets, and only those.</li>
+    <li>No database on the chat path: Valkey and in-memory counters only. Money moves later, from usage windows.</li>
+    <li>Privacy by design: logs and usage hold ids and counts, never prompts, answers, emails or keys.</li>
+  </ul>
+
+  <h2>The workflow <button id="all">Run everything</button></h2>
+  <ol id="steps"></ol>
+</main>
+<script>
+const say = document.getElementById("say");
+const s = { email: `demo-${Date.now()}@example.com`, password: "correct-horse-battery" };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const pretty = v => typeof v === "string" ? v : JSON.stringify(v, null, 2);
+const mask = t => t ? t.slice(0, 14) + "…" + t.slice(-4) : t;
+
+async function call(method, path, { json, body, bearer } = {}) {
+  const headers = {};
+  if (json) headers["Content-Type"] = "application/json";
+  if (bearer) headers.Authorization = "Bearer " + bearer;
+  const res = await fetch("/api" + path, { method, headers, body: json ? JSON.stringify(json) : body });
+  const text = await res.text();
+  let data = text; try { data = JSON.parse(text); } catch {}
+  return { status: res.status, data, res };
+}
+async function mail(subject) {
+  for (let i = 0; i < 30; i++) {
+    const m = await (await fetch("/dev/mail?to=" + encodeURIComponent(s.email))).json();
+    if (m.subject && m.subject.includes(subject)) return m;
+    await sleep(500);
+  }
+  throw new Error("no email");
+}
+
+const steps = [
+  { title: "1. Sign up", say: "Sign-up goes gateway → auth-service → account-service. The answer is <b>202 whether the email is new or not</b>, so nobody can probe who has an account.",
+    run: async out => {
+      const r = await call("POST", "/auth/register", { json: { name: "Demo", email: s.email, password: s.password } });
+      const early = await call("POST", "/auth/login", { json: { email: s.email, password: s.password } });
+      out(`POST /auth/register → ${r.status}\nlogin before verifying → ${early.status} (${early.data.detail || ""})`);
+      return r.status === 202 && early.status === 403;
+    } },
+  { title: "2. The verification email", say: "account-service mailed a <b>single-use link (24 h)</b>; only its SHA-256 is stored. Locally, Mailpit catches the email.",
+    run: async out => { const m = await mail("Confirm your email"); s.link = m.text; out(`Subject: ${m.subject}\n\n${m.text.trim().replace(/token=([\w-]{6})[\w-]+/, "token=$1…")}`); return true; } },
+  { title: "3. Click the link", say: "Following the link verifies the email. Until then, login answers <b>403</b>.",
+    run: async out => {
+      const token = s.link.match(/token=([\w-]+)/)[1];
+      const r = await call("POST", "/accounts/verify-email", { json: { token } });
+      out(`POST /accounts/verify-email → ${r.status}`); return r.status === 204;
+    } },
+  { title: "4. Log in", say: "auth-service checks the password (Argon2id), signs a <b>15-minute JWT</b> and sets an <b>HttpOnly refresh cookie</b> that this page's JavaScript can't even read.",
+    run: async out => {
+      const r = await call("POST", "/auth/login", { json: { email: s.email, password: s.password } });
+      s.token = r.data.token;
+      const me = await call("GET", "/auth/whoami", { bearer: s.token });
+      s.id = me.data.id;
+      out(`POST /auth/login → ${r.status}\naccess token: ${mask(s.token)}\nrefresh cookie visible to JavaScript? ${document.cookie.includes("carmonai-rt") ? "yes" : "no (HttpOnly)"}\nGET /auth/whoami → ${pretty(me.data)}`);
+      return r.status === 200 && me.status === 200;
+    } },
+  { title: "5. Refresh the session", say: "Refresh trades the cookie for a new token <b>and a new cookie</b>. An old cookie used again means it was copied: the session ends.",
+    run: async out => {
+      const r = await call("POST", "/auth/refresh");
+      s.token = r.data.token || s.token;
+      out(`POST /auth/refresh (cookie sent by the browser) → ${r.status}\nnew access token: ${mask(r.data.token)}`); return r.status === 200;
+    } },
+  { title: "6. Create an organization, add credit", say: "organization-service owns tenants (tier: trial). billing-service holds <b>prepaid credit in an append-only ledger</b>, in micro-BRL.",
+    run: async out => {
+      const r = await call("POST", "/organizations", { json: { name: "Demo Org" }, bearer: s.token });
+      s.org = r.data.id;
+      const g = await (await fetch("/dev/grant?org=" + s.org)).json();
+      out(`POST /organizations → ${r.status}  ${pretty(r.data)}\nR$10.00 of credit (internal grant) → ${g.status}`); return r.status === 201;
+    } },
+  { title: "7. Create an API key", say: "An org-owned key, <b>shown once</b> and stored as SHA-256. The gateway caches its lookup in Valkey and checks the org's credit flag.",
+    run: async out => {
+      const r = await call("POST", `/organizations/${s.org}/api-keys`, { json: { name: "demo" }, bearer: s.token });
+      s.key = r.data.key;
+      out(`POST /organizations/…/api-keys → ${r.status}\nkey (only now): ${mask(s.key)}`); return r.status === 201;
+    } },
+  { title: "8. Chat, streamed", say: "/v1 goes gateway → inference-service: <b>rate buckets</b> in Valkey, the tier's <b>share of the engine</b>, then the engine's tokens relayed <b>as they arrive</b>.",
+    run: async out => {
+      const res = await fetch("/api/v1/chat/completions", { method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + s.key },
+        body: JSON.stringify({ model: "carmonai/qwen3-0.6b", stream: true, max_tokens: 60,
+          messages: [{ role: "user", content: "In one sentence, what does an API gateway do?" }] }) });
+      const head = `→ ${res.status}  X-Request-Id ${res.headers.get("X-Request-Id")}  requests left this minute: ${res.headers.get("x-ratelimit-remaining-requests")}\n\n`;
+      let text = "", buffer = "";
+      const reader = res.body.getReader(), dec = new TextDecoder();
+      for (;;) {
+        const { value, done } = await reader.read(); if (done) break;
+        buffer += dec.decode(value, { stream: true });
+        const lines = buffer.split("\n"); buffer = lines.pop();
+        for (const line of lines) {
+          const d = line.replace(/^data: ?/, ""); if (!line.startsWith("data") || d === "[DONE]") continue;
+          try { text += JSON.parse(d).choices?.[0]?.delta?.content || ""; } catch {}
+        }
+        out(head + text);
+      }
+      return res.status === 200;
+    } },
+  { title: "9. A batch of requests", say: "batch-service stores the file, then runs it <b>line by line at the lowest priority</b>, only on idle capacity, at <b>half price</b>. Results come back as a file.",
+    run: async out => {
+      const questions = ["What is 2 + 2?", "Name a color of the sky.", "Say hello in Portuguese."];
+      const jsonl = questions.map((q, i) => JSON.stringify({ custom_id: "q" + (i + 1), method: "POST", url: "/v1/chat/completions",
+        body: { model: "carmonai/qwen3-0.6b", max_tokens: 20, messages: [{ role: "user", content: q }] } })).join("\n");
+      const form = new FormData(); form.append("purpose", "batch"); form.append("file", new Blob([jsonl]), "demo.jsonl");
+      const up = await fetch("/api/v1/files", { method: "POST", headers: { Authorization: "Bearer " + s.key }, body: form });
+      const file = await up.json();
+      const b = await call("POST", "/v1/batches", { bearer: s.key, json: { input_file_id: file.id, endpoint: "/v1/chat/completions", completion_window: "24h" } });
+      let batch = b.data;
+      for (let i = 0; i < 90 && batch.status !== "completed"; i++) {
+        out(`file ${file.id} → batch ${batch.id}: ${batch.status}, ${batch.request_counts.completed}/${batch.request_counts.total} done`);
+        await sleep(1000); batch = (await call("GET", "/v1/batches/" + batch.id, { bearer: s.key })).data;
+      }
+      const result = await call("GET", `/v1/files/${batch.output_file_id}/content`, { bearer: s.key });
+      const answers = String(result.data).trim().split("\n").map(l => JSON.parse(l))
+        .map(l => `${l.custom_id}: ${questions[+l.custom_id.slice(1) - 1]} → ${l.response.body.choices[0].message.content.trim()}`);
+      out(`batch ${batch.id}: ${batch.status}, ${batch.request_counts.completed}/${batch.request_counts.total} done\n\n${answers.join("\n")}`);
+      return batch.status === "completed";
+    } },
+  { title: "10. Usage becomes money", say: "Usage events (<b>ids and counts only</b>) go to usage-service. billing-service debits each sealed window. Out of credit → the gateway answers <b>402</b>.",
+    run: async out => {
+      let b;
+      for (let i = 0; i < 60; i++) {
+        b = (await (await fetch("/dev/balance?org=" + s.org)).json()).microBrl;
+        out(`balance: R$ ${(b / 1e6).toFixed(6)}  (waiting for the next billing window)`);
+        if (b && b < 10_000_000) break;
+        await sleep(1000);
+      }
+      out(`balance: R$ ${(b / 1e6).toFixed(6)}  → R$ ${((10_000_000 - b) / 1e6).toFixed(6)} billed so far (chat at the sync price, batch lines at half)`);
+      return b < 10_000_000;
+    } },
+  { title: "11. Export my data", say: "LGPD access: everything about you, from account-service and organization-service. <b>No password hash</b>.",
+    run: async out => { const r = await call("GET", `/accounts/${s.id}/export`, { bearer: s.token }); out(`GET /accounts/…/export → ${r.status}\n${pretty(r.data)}`); return r.status === 200; } },
+  { title: "12. Close and erase", say: "Closing the org <b>erases its batch files</b> (a sweep). Deleting the account <b>ends its sessions</b>: the refresh cookie stops working.",
+    run: async out => {
+      const c = await call("DELETE", "/organizations/" + s.org, { bearer: s.token });
+      const d = await call("DELETE", "/accounts/" + s.id, { bearer: s.token });
+      const r = await call("POST", "/auth/refresh");
+      const l = await call("POST", "/auth/login", { json: { email: s.email, password: s.password } });
+      out(`DELETE /organizations/… → ${c.status}\nDELETE /accounts/… → ${d.status}\nrefresh with the old cookie → ${r.status}\nlogin → ${l.status}`);
+      return c.status === 204 && d.status === 204 && r.status === 401 && l.status === 401;
+    } },
+];
+
+const list = document.getElementById("steps");
+steps.forEach((step, i) => {
+  const li = document.createElement("li");
+  li.innerHTML = `<h3><span>${step.title}</span><button>Run</button></h3><p>${step.say.replace(/<\/?b>/g, "")}</p><pre></pre>`;
+  li.querySelector("button").onclick = () => runStep(i);
+  list.appendChild(li);
+  step.li = li;
+});
+async function runStep(i) {
+  const { li, run, say: text } = steps[i];
+  const pre = li.querySelector("pre");
+  li.className = "run"; say.innerHTML = `<b>${steps[i].title}</b> — ${text}`;
+  li.scrollIntoView({ block: "center", behavior: "smooth" });
+  try { li.className = (await run(v => { pre.textContent = v; })) ? "ok" : "bad"; }
+  catch (e) { pre.textContent += "\n" + e; li.className = "bad"; }
+  return li.className === "ok";
+}
+async function runAll() {
+  window.done = false;
+  for (let i = 0; i < steps.length; i++) { await runStep(i); await sleep(1500); }
+  say.innerHTML = "<b>Done.</b> Every step ran through the gateway, the way a customer's app would.";
+  window.scrollTo({ top: 0, behavior: "smooth" });
+  window.done = true;
+}
+document.getElementById("all").onclick = runAll;
+window.runAll = runAll;
+</script>
+</body>
+</html>
