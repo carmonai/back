@@ -20,6 +20,8 @@
   #steps h3 { margin: 0; font-size: 19px; display: flex; justify-content: space-between; gap: 12px; }
   #steps p { margin: 4px 0 0; color: #4a5568; }
   #steps pre:empty { display: none; }
+  pre.narrow { display: none; }
+  @media (max-width: 640px) { pre.wide { display: none; } pre.narrow { display: block; } }
   button { font: inherit; padding: 4px 12px; cursor: pointer; }
 </style>
 </head>
@@ -30,7 +32,7 @@
   <p>This page plays the console, on <code>localhost:3000</code> (the origin the stack trusts). It talks only to the gateway, the way a customer would. Three <code>/dev</code> helpers stand in for things a customer can't do: read the email Mailpit caught, add prepaid credit, and show a balance.</p>
 
   <h2>How it's built</h2>
-<pre>browser / OpenAI SDK
+<pre class="wide">browser / OpenAI SDK
    │  HTTPS
    ▼
 gateway ── checks the JWT or API key · refuses foreign Origins · rate brake · request id · access log
@@ -41,6 +43,24 @@ gateway ── checks the JWT or API key · refuses foreign Origins · rate brak
    └─ /v1/files, /v1/batches  ─► batch-service ─► inference-service (lowest priority)
 
 Postgres: one schema per service      Valkey: API-key cache, rate buckets, credit flags</pre>
+<pre class="narrow">browser / OpenAI SDK
+        │ HTTPS
+        ▼
+gateway: JWT or API key · Origin check
+  rate brake · request id · access log
+  ├ /auth, /accounts
+  │   → auth → account → email
+  ├ /organizations, keys
+  │   → organization, auth
+  ├ /v1/chat/completions
+  │   → inference → llama.cpp | vLLM
+  │      └ usage → usage ← billing
+  └ /v1/files, /v1/batches
+      → batch → inference (lowest)
+
+Postgres: one schema per service
+Valkey: key cache, rate buckets,
+        credit flags</pre>
   <ul>
     <li>One Java service per job, each with its own schema. Services call each other through shared Feign interfaces; only the gateway is public.</li>
     <li>The gateway decides who you are. Services trust the identity headers it sets, and only those.</li>

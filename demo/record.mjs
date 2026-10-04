@@ -2,6 +2,7 @@
 // console, shows the design for a few seconds, runs every step, and saves a frame every 400 ms to the
 // directory given as the first argument. make_video.py turns the frames into an animated WebP.
 // Run with serve.py up: node record.mjs <frames-dir>
+// Phone-sized: WIDTH=412 HEIGHT=860 SCALE=2 node record.mjs <frames-dir>   (CSS pixels; frames are SCALE times larger)
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,6 +10,7 @@ import { join } from "node:path";
 
 const BROWSER = process.env.BROWSER_PATH || "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe";
 const PORT = 9333;
+const [WIDTH, HEIGHT, SCALE] = [process.env.WIDTH || 1280, process.env.HEIGHT || 800, process.env.SCALE || 1].map(Number);
 const out = process.argv[2];
 mkdirSync(out, { recursive: true });
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -40,7 +42,7 @@ const shoot = async (count = 1) => {
   }
 };
 
-await send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false });
+await send("Emulation.setDeviceMetricsOverride", { width: WIDTH, height: HEIGHT, deviceScaleFactor: SCALE, mobile: WIDTH < 640 });
 await send("Page.navigate", { url: "http://localhost:3000/" });
 await sleep(1500);
 
@@ -51,6 +53,7 @@ const intro = [
   "<b>Chat never touches a database</b>: Valkey and in-memory counters admit it, the engine streams it, money follows from usage.",
   "<b>Privacy by design</b>: logs and usage keep ids and counts, never prompts, answers, emails or keys. Now, the workflow ↓",
 ];
+await run(`window.scrollTo(0, document.querySelector("h2").offsetTop - 90)`);   // the design section
 for (const line of intro) {
   await run(`document.getElementById("say").innerHTML = ${JSON.stringify(line)}`);
   await shoot(9);
