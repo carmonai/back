@@ -38,6 +38,11 @@ Revision 2, 2026-10-02. Revision 1 was reviewed by one subagent per topic; their
 - The reconciliation logs (INFO, WARN past the tolerance) instead of alerting: there is no alerting stack yet. Its tolerance is max(0.5%, (slots + queue) × context window), because requests in flight across an hour's edges count on one side only; each replica reconciles every model.
 - Valkey's other keys (API-key cache, credit flags, rate buckets) now survive restarts too; each expires or is re-synced on its own.
 
+**Flex processing built 2026-10-04** (gap 3 of the handoff; OpenAI's `service_tier: "flex"`): a live `/v1/chat/completions` request with `service_tier: "flex"` runs in the batch lane: vLLM priority 30, only while the model is at most half busy (the batch lines' share, whatever the organization's tier), at batch prices. With no spare capacity it gets 429 `resource_unavailable` at once and is not billed, so clients retry with backoff or without the tier, as OpenAI's guide says. `auto` and `default` are the standard lane; any other tier is 400 `unsupported_service_tier`. Deviations, on purpose:
+- Flex usage is recorded as mode `batch`, the half-price lane billing already prices: no usage or billing migration. ponytail: a `flex` mode of its own (CHECK constraints, prices, `UsageService.MODES`) when flex needs a price or a report apart from the Batch API.
+- The organization's rate buckets and in-flight cap still apply (batch lines skip them): flex is cheaper, not a way around the limits.
+- Responses don't carry `service_tier`: a flex request is either served as flex or refused, never moved to another lane.
+
 **Phase 6 built 2026-10-03** (log: [phase-6-progress.md](phase-6-progress.md)): batch-service (schema `batch`) serves OpenAI's Files and Batch API through the gateway: upload a JSONL file, create a batch, poll it, cancel it, read the output and error files. A worker runs each line through inference-service with the batch's identity and a `batch-line` marker: priority 30, no rate buckets, only while the model is at most half busy, credit checked per line, priced at half the sync price. A line keeps one usage event id and start, so a line run again after a crash is billed once. Exit check on the RTX 3050 (`docker/batch-bench.sh`): a 10,000-line batch completed in 999 s (10.0 lines/s) beside enterprise traffic at 100% goodput (TTFT p95 80 ms) while trial was shed; batch-service was SIGKILLed mid-call halfway, the cut line ran again, and usage-service held exactly 10,000 events, each the run that answered; no TTFT timeouts. Found on the way, both in inference-service's usage reporter since phase 2 (= unbilled usage), both fixed with a regression test: concurrent reports were dropped (`FAIL_NON_SERIALIZED` on a unicast sink), and a usage-service slower than 1 s killed the reporting pipeline for good (`bufferTimeout` flushing without demand → `OverflowException`; now `fairBackpressure`). Also: a batch line cut short by a crash was billed for its partial run while its answer went free; now only the run that answered is billed. Deviations, on purpose:
 - Files live in Postgres (`bytea`), capped by the gateway's 4 MB `/v1` body limit (OpenAI allows 200 MB); object storage when files grow or hosting is decided.
 - A batch file is validated when the batch is created (400 naming the line) instead of OpenAI's asynchronous `validating` → `failed`; no list endpoints, no `metadata`.
@@ -137,7 +142,7 @@ Session       id · account_id · token_hash · created_at · last_used_at · ex
 ```
 UsageEvent   v=1, JSON, additive changes stay v1
              event_id(UUIDv7 minted at admission; batch: UUIDv5(job, line)) · request_id · org_id · api_key_id
-             · model · mode(sync|batch) · tier · input_tokens(incl. cached) · cached_input_tokens · output_tokens
+             · model · mode(sync|batch; batch = the half-price lane: Batch API lines and flex requests) · tier · input_tokens(incl. cached) · cached_input_tokens · output_tokens
              · status(ok|error|cancelled) · started_at · ttft_ms · duration_ms        ← no prompt, output or IP
 UsageRaw     partitioned by started_at (day); PK (event_id, started_at); index received_at; 90-day retention
 UsageWindow  org · api_key · model · mode · window_start(5 min) · sums                ← sealed by a job
@@ -272,7 +277,7 @@ Out of scope until there is a reason: disaggregated prefill/decode, speculative 
 ## 12. Decisions
 
 **Made**:
-- Product: OpenAI-compatible `/v1`; vLLM; tiers trial/standard/enterprise, no free tier; Batch API in phase 6; prepaid credits (Pix when the first customer pays).
+- Product: OpenAI-compatible `/v1`; vLLM; tiers trial/standard/enterprise, no free tier; Batch API in phase 6; `service_tier: "flex"` at batch prices on spare capacity (2026-10-04); prepaid credits (Pix when the first customer pays).
 - Billing rules: cancelled streams billed input + generated output; cancelled non-stream requests billed estimated input only; `status=error` (our failure) not billed; balance floor 0.
 - Identity: refresh token in an HttpOnly cookie; sessions idle 7 days, absolute 30 days; console SPA on the same origin as the console API; explicit org creation; membership checks via organization-service; erasing the sole owner of an active org → 409 until the org is closed; `cmn_test_` prefix outside production.
 - Engineering: Java 25 LTS; one repo per module (CI needs a read token for the sibling repos); Kafka only when an event gets a second consumer.
