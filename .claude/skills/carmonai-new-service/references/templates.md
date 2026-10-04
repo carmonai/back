@@ -131,6 +131,9 @@ Health checking is the orchestrator's job: compose `healthcheck` and K8s probes 
 - `MockServerHttpRequest.header("Cookie", …)` doesn't fill `getCookies()`; Netty does. Read the header when code must work under both.
 - Shell scripts with `set -o pipefail`: never `producer | grep -q` or `| head -1` on a command that keeps writing (it dies on the broken pipe and the pipeline fails); capture into a variable first.
 - Timeouts nest: the gateway's `response-timeout` must exceed the worst case of the service behind it, retries included.
+- Lettuce: a command that times out on the client may still run on the server, because it was already sent (Valkey paused, then back): retrying an `XADD` after a timeout can write it twice. Make what you write idempotent (usage events carry their id).
+- Valkey streams from Lua: `XREADGROUP` (without `BLOCK`) and `XAUTOCLAIM` work inside a script, so claim-or-read plus group creation (`XGROUP CREATE … MKSTREAM` on `NOGROUP`) is one round trip. Confirm an entry with `XDEL` before `XACK`: an acknowledged entry that failed to delete stays in the stream for good, while a deleted one left pending is dropped by the next `XAUTOCLAIM`.
+- llama.cpp `/metrics` needs the API key, and `llamacpp:prompt_tokens_total` leaves out prompt tokens reused from its cache (`llamacpp:prompt_tokens_cached_total`). vLLM's `/metrics` isn't behind `--api-key` and its `vllm:prompt_tokens_total` includes cache hits.
 
 ## back/docker/compose.yaml
 

@@ -197,6 +197,26 @@ cancelled=$(sql "SELECT output_tokens FROM usage.usage_event WHERE organization_
 [[ ${cancelled:-0} -gt 0 ]] && echo "ok   the cancelled stream is billed for its $cancelled generated tokens" \
   || { echo "FAIL the cancelled stream recorded no output tokens"; exit 1; }
 
+# Usage survives a crash: with usage-service down, the events wait in Valkey's stream; inference-service
+# is killed (no graceful flush) and restarted; each event then reaches usage-service once.
+"${DC[@]}" stop usage >/dev/null 2>&1
+rids=()
+for _ in 1 2 3; do
+  expect 200 -D "$HDRS" "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "$(chat 'Say hi.' 8)"
+  rids+=("'$(sed -nE 's/^x-request-id: ([0-9a-f-]{36}).*/\1/ip' "$HDRS")'")
+done
+sleep 1
+"${DC[@]}" kill -s SIGKILL inference >/dev/null 2>&1
+"${DC[@]}" up -d --wait usage inference >/dev/null 2>&1
+stored=""
+for _ in $(seq 40); do
+  stored=$(sql "SELECT count(*) FROM usage.usage_event WHERE request_id IN ($(IFS=,; echo "${rids[*]}"))" | tr -d '\r')
+  [[ $stored == 3 ]] && break
+  sleep 1
+done
+[[ $stored == 3 ]] && echo "ok   usage-service down and inference-service killed: all 3 usage events arrived, once each" \
+  || { echo "FAIL $stored of 3 usage events arrived after the crash"; exit 1; }
+
 # GPU engine only: tool calls, and the engine's port stays off the host.
 if [[ $ENGINE == vllm ]]; then
   tools='"tools":[{"type":"function","function":{"name":"get_weather","description":"Current weather in a city","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}],"tool_choice":{"type":"function","function":{"name":"get_weather"}}'
@@ -276,7 +296,7 @@ expect 404 "${K2[@]}" "$G/v1/files/$input_id"
 # stripped by the gateway, so this malformed one never reaches inference-service (which would answer 400).
 expect 200 "${K2[@]}" "${J[@]}" -H 'batch-line: forged' -X POST "$G/v1/chat/completions" -d "$(chat 'Say hi.' 8)"
 
-## Canary: sync prompts and keys never reach a log or the database (batch files are stored on purpose, 30 days)
+## Canary: sync prompts and keys never reach a log, the database or Valkey's file (batch files are stored on purpose, 30 days)
 canary="CANARY-$RANDOM$RANDOM"
 expect 200 "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "$(chat "Repeat exactly: $canary" 16)"
 curl -sN "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "$(chat "Repeat exactly: $canary" 16 ',"stream":true')" >/dev/null
@@ -290,9 +310,10 @@ curl -sN --max-time 1 "${K2[@]}" "${J[@]}" -X POST "$G/v1/chat/completions" -d "
 expect 400 "${K2[@]}" "$G/v1/models?api_key=cmn_test_$canary"
 sleep 2   # let batches and logs flush
 access_log() { MSYS_NO_PATHCONV=1 "${DC[@]}" exec -T gateway sh -c 'cat /var/log/carmonai/access.log'; }
-leaks=$( { "${DC[@]}" logs --no-color 2>&1; "${DC[@]}" exec -T db sh -c 'pg_dumpall -U "$POSTGRES_USER"'; access_log; } \
-  | grep -cF -e "$canary" -e "Bearer " -e "$key2" -e "api_key=" -e "${keep#*=}" || true)
-[[ $leaks == 0 ]] && echo "ok   the canary, bearer headers, the API key and query strings are in no log (access log included) and nowhere in the database" \
+valkey_file() { MSYS_NO_PATHCONV=1 "${DC[@]}" exec -T valkey sh -c 'cat /data/appendonlydir/*'; }
+leaks=$( { "${DC[@]}" logs --no-color 2>&1; "${DC[@]}" exec -T db sh -c 'pg_dumpall -U "$POSTGRES_USER"'; access_log; valkey_file; } \
+  | grep -acF -e "$canary" -e "Bearer " -e "$key2" -e "api_key=" -e "${keep#*=}" || true)
+[[ $leaks == 0 ]] && echo "ok   the canary, bearer headers, the API key and query strings are in no log (access log included), nowhere in the database and nowhere in Valkey's file" \
   || { echo "FAIL $leaks lines leak the canary, a bearer header, the key or a query string"; exit 1; }
 # Marco Civil access log: the request above, with its ids, in the gateway's own file (not on stdout).
 grep -q "$rid" <(access_log) && grep "$rid" <(access_log) | grep -q "\"organization_id\":\"$org\"" \
