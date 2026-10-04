@@ -11,7 +11,7 @@ Working log started 2026-10-04, from the handoff's "Known gaps" table (the revie
 - [x] smoke: usage-service stopped, inference-service SIGKILLed: every usage event arrives once; Valkey's file joins the canary check
 - [x] `mvn clean verify` + CPU smoke green; GPU smoke and the vLLM counters
 - [x] Docs; commit + push, PRs
-- [ ] Merged (waits for the user's "merge")
+- [x] Merged 2026-10-04 (usage#3, usage-service#3, inference-service#6, back#11)
 
 ## Design decisions (keep consistent when resuming)
 
