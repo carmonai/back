@@ -17,6 +17,8 @@ Inference-as-a-Service for Brazil: the first of its kind, B2B, LGPD-friendly. Ja
 
 ## Status
 
+Handoff for the next agent (2026-10-04, end of phase 7a): https://claude.ai/artifact/6MjYdNomtPpVa4vortkbzB (read it with the Artifact tool, `action: "read"`). It summarizes everything below and in `carmonai-architecture/references/`; when they disagree, the repo wins.
+
 | Piece | State |
 |---|---|
 | Core: `account`, `account-service`, `auth`, `auth-service`, `organization`, `organization-service`, `usage`, `usage-service`, `inference-service`, `billing`, `billing-service`, `batch-service`, `gateway-service` + Valkey + llama.cpp | accounts and JWT login (2026-10-02); organizations, org-owned API keys (`cmn_test_…`, SHA-256 at rest, Valkey-cached lookup, immediate revocation), `/v1` API-key chain and erasure via organization-service (2026-10-03, inference-plan phase 1). `mvn verify` from `back/`, `docker compose up -d --build --wait` in `back/docker`, then `back/docker/smoke.sh` |
