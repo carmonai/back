@@ -1,0 +1,177 @@
+# Carmonai — architecture and internals
+#
+# Structure follows the course-site template this project's architecture is based on
+# (https://insper.github.io/ann-dl/2026.2/): a dated edition at the root, then numbered sections.
+#
+# Published to https://carmonai.github.io/back/ by .github/workflows/docs.yaml.
+
+site_name: Carmonai · Architecture
+site_description: >-
+  Inference-as-a-service for Brazil: how the platform is built, how a request travels through it,
+  and why each decision was made.
+site_author: Carmonai
+site_url: https://carmonai.github.io/back/
+repo_url: https://github.com/carmonai/back
+repo_name: carmonai/back
+edit_uri: edit/main/docs/
+
+copyright: Carmonai — LGPD by design, prepaid in BRL, built in Brazil.
+
+theme:
+  name: material
+  language: en
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/toggle-switch-off-outline
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/toggle-switch
+        name: Switch to light mode
+  features:
+    - content.code.copy
+    - content.code.select
+    - content.code.annotate
+    - content.tooltips
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.top
+    - navigation.path
+    - navigation.tracking
+    - navigation.expand
+    - navigation.indexes
+    - navigation.footer
+    - toc.follow
+  icon:
+    admonition:
+      note: fontawesome/solid/note-sticky
+      abstract: fontawesome/solid/book
+      info: fontawesome/solid/circle-info
+      tip: fontawesome/solid/bullhorn
+      success: fontawesome/solid/check
+      question: fontawesome/solid/circle-question
+      warning: fontawesome/solid/triangle-exclamation
+      failure: fontawesome/solid/bomb
+      danger: fontawesome/solid/skull
+      bug: fontawesome/solid/robot
+      example: fontawesome/solid/flask
+      quote: fontawesome/solid/quote-left
+
+extra_css:
+  - stylesheets/tokens.css
+  - stylesheets/diagrams.css
+  - stylesheets/flow.css
+
+extra_javascript:
+  - javascripts/flow.js
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      base_path: [.]
+      check_paths: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.blocks.caption
+
+plugins:
+  - search
+  # Page dates come from git history, which is why the docs workflow checks out with fetch-depth: 0.
+  - git-revision-date-localized:
+      enable_creation_date: true
+      type: iso_date
+      fallback_to_build_date: true
+  - minify:
+      minify_html: true
+
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+nav:
+  - Overview: index.md
+  - Architecture:
+      - architecture/index.md
+      - The shape of the system: architecture/topology.md
+      - Service boundaries: architecture/boundaries.md
+      - Hardening overrides: architecture/hardening.md
+      - Resilience: architecture/resilience.md
+      - Security and privacy: architecture/security.md
+  - Services:
+      - services/index.md
+      - Gateway: services/gateway.md
+      - Auth: services/auth.md
+      - Account: services/account.md
+      - Organization: services/organization.md
+      - Inference: services/inference.md
+      - Metering: services/metering.md
+      - Billing: services/billing.md
+      - Batch: services/batch.md
+      - Libraries: services/libraries.md
+  - The path of a request:
+      - requests/index.md
+      - 1 · The edge: requests/edge.md
+      - 2 · Who is calling: requests/identity.md
+      - 3 · Admission: requests/admission.md
+      - 4 · The relay: requests/relay.md
+      - 5 · The end, however it ends: requests/ending.md
+  - Inference:
+      - inference/index.md
+      - Batching and response routing: inference/batching.md
+      - Routing responses: inference/routing.md
+      - Capacity and fairness: inference/capacity.md
+  - Data:
+      - data/index.md
+      - Schemas: data/schemas.md
+      - Money: data/money.md
+      - Tenancy: data/tenancy.md
+  - Operations:
+      - operations/index.md
+      - Running it locally: operations/running.md
+      - Observability: operations/observability.md
+      - CI and shipping: operations/ci.md
+      - Batch API design: operations/batch-api.md
+      - Knowledge base: operations/knowledge-base.md
+  - Reference:
+      - reference/index.md
+      - Decisions: reference/decisions.md
+      - Abandoned ideas: reference/abandoned.md
+      - Known gaps: reference/gaps.md
+      - Which notes to trust: reference/status.md
+      - Glossary: reference/glossary.md

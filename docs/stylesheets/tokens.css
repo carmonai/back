@@ -1,0 +1,93 @@
+﻿/* =============================================================================
+   Carmonai diagram tokens and geometry.
+
+   The palette and the numbers in this file are not guesswork: they come from
+   `work/research/visual-design-rules.md`, whose rule card labels each one
+   [R] (a requirement from WCAG 2.2 or a spec â€” do not adapt) or [T] (house style
+   â€” change it here, in one place, never per diagram).
+
+   The load-bearing rules this file implements:
+
+   * Every meaning-carrying colour is declared per colour scheme, on
+     `[data-md-color-scheme="â€¦"]` â€” NOT via `prefers-color-scheme` â€” because the
+     theme's own toggle sets that attribute and a media query would show dark
+     colours on a light page (rule 7).
+   * No diagram writes a hex value. It asks for a token (rule 6).
+   * Colour never carries meaning alone: solid = request, dashed = response,
+     dotted = asynchronous (rule 4).
+   * Text â‰¥ 4.5:1 on its background; lines and borders â‰¥ 3:1, aimed at 4.5:1
+     because anti-aliasing thins strokes (rules 2 and 3).
+   ============================================================================= */
+
+:root {
+  /* Brand, from the logo. Used for chrome, not for diagram semantics. */
+  --cmn-ink: #07182e;
+  --cmn-green: #0ea765;
+  --cmn-yellow: #ffd23f;
+
+  /* Geometry (rules 15, 20, 26) â€” one place for the whole site. */
+  --cmn-stroke-link: 2px;   /* rule 15 floor: >= 2px */
+  --cmn-stroke-node: 1.5px; /* rule 15 floor: >= 1.5px */
+  --cmn-radius: 10;
+  --cmn-node-pad-x: 14;
+  --cmn-font-node: 13px;
+  --cmn-font-label: 11px;
+
+  /* Motion (rules 11â€“13). */
+  --cmn-hop: 300ms;
+  --cmn-travel: 2.2s;
+  --cmn-stagger: 120ms;
+}
+
+/* ---- light scheme: on white -------------------------------------------- */
+[data-md-color-scheme="default"] {
+  --cmn-surface:      #ffffff;
+  --cmn-surface-alt:  #f4f6f9;
+  --cmn-line:         #5b5b5b;   /* secondary connectors */
+  --cmn-line-strong:  #333333;   /* node outlines        */
+  --cmn-text:         #1a1a1a;   /* node labels          */
+  --cmn-text-soft:    #4a5768;   /* sub-labels           */
+
+  --cmn-flow:         #1a3d8f;   /* a request travelling */
+  --cmn-flow-soft:    #e6ecfa;
+  --cmn-accent:       #00695c;   /* work done, a response */
+  --cmn-accent-soft:  #e0f2ef;
+  --cmn-money:        #7a5c00;   /* money moving          */
+  --cmn-money-soft:   #fbf3d8;
+  --cmn-danger:       #8a2b2b;
+  --cmn-quiet:        #6b7280;
+}
+
+/* ---- dark scheme: on the theme's slate background ----------------------- */
+[data-md-color-scheme="slate"] {
+  --cmn-surface:      #1e2129;
+  --cmn-surface-alt:  #262a34;
+  --cmn-line:         #b0b0b0;
+  --cmn-line-strong:  #e0e0e0;
+  --cmn-text:         #e2e4e9;
+  --cmn-text-soft:    #a9b6c9;
+
+  --cmn-flow:         #8fb0ff;
+  --cmn-flow-soft:    #1c2740;
+  --cmn-accent:       #5eead4;
+  --cmn-accent-soft:  #14312f;
+  --cmn-money:        #ffd24d;
+  --cmn-money-soft:   #33290f;
+  --cmn-danger:       #ff9e9e;
+  --cmn-quiet:        #9aa4b2;
+}
+
+/* Material's own header/accent slots, so the chrome matches the brand. */
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color:        #07182e;
+  --md-primary-fg-color--light: #16304f;
+  --md-primary-fg-color--dark:  #04101f;
+  --md-accent-fg-color:         #0ea765;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color:        #0b1a2e;
+  --md-primary-fg-color--light: #16304f;
+  --md-primary-fg-color--dark:  #04101f;
+  --md-accent-fg-color:         #3ddc97;
+}

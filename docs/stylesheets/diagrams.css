@@ -1,0 +1,180 @@
+/* =============================================================================
+   Diagram primitives.
+
+   A writer composes a diagram from these classes and never writes a colour or a
+   stroke width. Structure comes from tokens, so one diagram reads correctly in
+   both schemes without being duplicated.
+
+   Line conventions (rule 4 — colour never carries meaning alone):
+     .cmn-link--flow    solid    a request travelling
+     .cmn-link--accent  dashed   a response coming back
+     .cmn-link--money   dashed   money moving, later
+     .cmn-link--quiet   dotted   an asynchronous hop
+   ============================================================================= */
+
+.cmn-flow {
+  display: block;
+  margin: 1.8rem 0 0.6rem;
+}
+
+.cmn-flow svg {
+  display: block;
+  width: 100%;
+  max-width: 100%;         /* C37: never force a page-level scrollbar (rule 28) */
+  height: auto;
+  overflow: visible;
+  font-family: inherit;
+}
+
+/* ---- nodes -------------------------------------------------------------- */
+.cmn-node rect,
+.cmn-node circle,
+.cmn-node polygon,
+.cmn-node path {
+  fill: var(--cmn-surface);
+  stroke: var(--cmn-line-strong);
+  stroke-width: var(--cmn-stroke-node);
+  /* Keep the outline from thinning when the SVG scales down (rule 15). */
+  vector-effect: non-scaling-stroke;
+}
+
+.cmn-node--flow rect   { stroke: var(--cmn-flow); }
+.cmn-node--accent rect { stroke: var(--cmn-accent); }
+.cmn-node--money rect  { stroke: var(--cmn-money); }
+.cmn-node--soft rect   { fill: var(--cmn-surface-alt); stroke: var(--cmn-line); }
+
+/* A refusal or a failure. Colour is a second channel only: the node's label always says what failed
+   (visual spec rule 3), so this reads correctly without it. */
+.cmn-node--danger rect {
+  stroke: var(--cmn-danger);
+  stroke-dasharray: 4 3;
+}
+
+.cmn-node text {
+  fill: var(--cmn-text);
+  font-size: var(--cmn-font-node);
+  font-weight: 600;
+  text-anchor: middle;
+  dominant-baseline: middle;
+}
+
+.cmn-node .cmn-sub {
+  fill: var(--cmn-text-soft);
+  font-size: var(--cmn-font-label);
+  font-weight: 400;
+}
+
+/* The entry point: a heavier outline, so a reader knows where to start (rule 19). */
+.cmn-node--entry rect {
+  stroke-width: calc(var(--cmn-stroke-node) * 1.6);
+}
+
+/* ---- links -------------------------------------------------------------- */
+.cmn-link {
+  fill: none;
+  stroke: var(--cmn-line);
+  stroke-width: var(--cmn-stroke-link);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.cmn-link--flow   { stroke: var(--cmn-flow); }
+.cmn-link--accent { stroke: var(--cmn-accent); stroke-dasharray: 7 5; }
+.cmn-link--money  { stroke: var(--cmn-money);  stroke-dasharray: 7 5; }
+.cmn-link--quiet  { stroke: var(--cmn-quiet);  stroke-dasharray: 2 5; }
+
+/* Arrowheads inherit the colour of the line they terminate (rule 6). */
+.cmn-arrow {
+  fill: context-stroke;
+  stroke: none;
+}
+
+/* ---- packets ------------------------------------------------------------ */
+.cmn-packet {
+  fill: var(--cmn-flow);
+  stroke: none;
+}
+
+.cmn-packet--accent { fill: var(--cmn-accent); }
+.cmn-packet--money  { fill: var(--cmn-money); }
+
+/* ---- labels ------------------------------------------------------------- */
+.cmn-label {
+  fill: var(--cmn-text-soft);
+  font-size: var(--cmn-font-label);
+  font-weight: 500;
+  text-anchor: middle;
+}
+
+/* A backing plate, so an edge label never sits on a stroke (rule 16). */
+.cmn-label-plate {
+  fill: var(--cmn-surface);
+  stroke: none;
+}
+
+/* ---- ordered steps ------------------------------------------------------ */
+.cmn-step-num {
+  fill: var(--cmn-surface);
+  stroke: var(--cmn-line-strong);
+  stroke-width: var(--cmn-stroke-node);
+  vector-effect: non-scaling-stroke;
+}
+
+.cmn-step-num-text {
+  fill: var(--cmn-text);
+  font-size: 11px;
+  font-weight: 700;
+  text-anchor: middle;
+  dominant-baseline: middle;
+}
+
+/* ---- the caption and legend under a diagram ----------------------------- */
+.cmn-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.4rem;
+  margin: 0.2rem 0 1.6rem;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: var(--md-default-fg-color--light);
+}
+
+.cmn-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+/* The swatch repeats the line convention, so the legend is readable in words
+   as well as in colour (rules 4 and 5). */
+.cmn-legend i {
+  flex: none;
+  width: 1.6rem;
+  height: 0;
+  border-top-width: 2px;
+  border-top-style: solid;
+  color: var(--cmn-line);
+}
+
+.cmn-legend i.is-flow    { color: var(--cmn-flow); }
+.cmn-legend i.is-accent  { color: var(--cmn-accent); border-top-style: dashed; }
+.cmn-legend i.is-money   { color: var(--cmn-money);  border-top-style: dashed; }
+.cmn-legend i.is-async   { color: var(--cmn-quiet);  border-top-style: dotted; }
+
+.cmn-figure {
+  margin: 1.8rem 0 2.2rem;
+}
+
+.cmn-figure figcaption {
+  margin-top: 0.5rem;
+  font-size: 0.78rem;
+  line-height: 1.6;
+  color: var(--md-default-fg-color--light);
+}
+
+/* Mermaid renders itself; give it room and let it scale. */
+.md-typeset .mermaid {
+  margin: 1.8rem 0;
+  text-align: center;
+}

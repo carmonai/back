@@ -1,0 +1,6 @@
+# Pinned to the versions in the squidfunk/mkdocs-material image the site is built and verified with
+# locally, so `docker run ... build --strict` and CI/(local) `mkdocs build` agree.
+mkdocs==1.6.1
+mkdocs-material==9.7.7
+mkdocs-minify-plugin==0.8.0
+mkdocs-git-revision-date-localized-plugin==1.5.3

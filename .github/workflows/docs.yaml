@@ -1,0 +1,87 @@
+# Builds the documentation site and publishes it to GitHub Pages.
+#
+# This uses GitHub's own Pages artifact flow (configure → upload → deploy) rather than `mkdocs gh-deploy`.
+# The reason is documented by GitHub and is easy to get wrong: "Commits pushed by a GitHub Actions workflow
+# that uses the GITHUB_TOKEN do not trigger a GitHub Pages build." Pushing to `gh-pages` from here therefore
+# republishes nothing. The artifact flow deploys the site directly, with no second branch and no push.
+#
+# One repository setting is required, and nothing in this file can set it:
+#   Settings → Pages → Build and deployment → Source = "GitHub Actions"
+# (The alternative, "Deploy from a branch" on `gh-pages`, is what `mkdocs gh-deploy` is for. They are
+# mutually exclusive — pick one. `docs/operations/ci.md` describes the tradeoff.)
+#
+# `fetch-depth: 0` is not optional: the git-revision-date-localized plugin dates each page from its last
+# commit, and a shallow clone has no history to read.
+
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/**
+      - mkdocs.yml
+      - requirements.txt
+      - .github/workflows/docs.yaml
+  workflow_dispatch:
+
+# Least privilege, and exactly the set GitHub's Pages starter workflow uses:
+#   contents: read    — checkout
+#   pages: write      — publish the artifact to Pages
+#   id-token: write   — the OIDC token deploy-pages trades for a deployment
+# Note GitHub's rule that any permission not listed becomes `none`, which is why `contents: read` is here
+# explicitly rather than left out.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time, and never cancel one in flight: a half-deployed site is a broken site.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      # Versions are pinned in requirements.txt to match the image the site is verified against locally.
+      - name: Install
+        run: pip install -r requirements.txt
+
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@v5
+
+      # --strict turns a broken internal link, an unknown anchor or a missing nav page into a failure, so a
+      # page cannot silently disappear from the published site. (`site_url` is written once in mkdocs.yml
+      # rather than derived from `steps.pages.outputs.base_url`: MkDocs only reads the environment through
+      # an explicit `!ENV` tag, and one hard-coded canonical URL is simpler than two places to keep in sync.)
+      - name: Build
+        run: mkdocs build --strict
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

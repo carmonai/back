@@ -1,0 +1,110 @@
+/* =============================================================================
+   Motion.
+
+   Animation here has one job: to show **order and position** — which hop happens
+   when, and where the payload is (research rule 9). If a static frame already
+   shows the order, the static frame is enough.
+
+   Two rules shape this file:
+
+   * Rule 14 [R]: the static styles are the default, and every moving style sits
+     inside `@media (prefers-reduced-motion: no-preference)`. A reader who asks
+     for reduced motion therefore gets a complete diagram without the moving
+     rules ever applying — never a blank or a half-drawn frame.
+   * Rule 10 [R]: an autonomous sequence stays under 5 s, or it needs a visible
+     stop control. Every duration below is ≤ 2.4 s for one hop and the whole
+     trip is a single looping pass, well inside that ceiling.
+
+   Durations, easing and stagger are taste (rules 11–13): they live in
+   `tokens.css` and are changed once, for the whole site.
+   ============================================================================= */
+
+/* ---- static state: which is also the reduced-motion state --------------- */
+
+/* A dashed connector, at rest. */
+.cmn-dash {
+  stroke-dasharray: 6 6;
+}
+
+/* The packet is positioned along its path by the diagram's own `offset-path`
+   inline style. At rest it sits at the end of the hop, so a static frame still
+   shows that the payload arrives — parking it at the start would read as
+   "nothing happened". */
+.cmn-travel {
+  offset-rotate: 0deg;
+  offset-distance: 100%;
+}
+
+/* A node that lights up in turn; at rest, every node is equally present. */
+.cmn-step {
+  opacity: 1;
+}
+
+/* A path that draws itself on; at rest it is complete. */
+.cmn-draw {
+  stroke-dasharray: var(--cmn-len, 400);
+  stroke-dashoffset: 0;
+}
+
+/* ---- motion ------------------------------------------------------------- */
+@media (prefers-reduced-motion: no-preference) {
+  /* Dashes travelling along a connector, so the direction of a hop is
+     unmistakable even before the packet moves. */
+  .cmn-dash {
+    animation: cmn-dash-travel 1.2s linear infinite;
+  }
+
+  /* The packet crossing one edge: 200–350 ms is the recommended range for a
+     single hop (rule 11); the loop adds a pause so the eye can follow it. */
+  .cmn-travel {
+    animation: cmn-travel var(--cmn-travel) linear infinite;
+    animation-delay: var(--cmn-delay, 0s);
+  }
+
+  /* Attention without movement: a soft halo on the part the step is about. */
+  .cmn-pulse {
+    animation: cmn-pulse 2.6s ease-in-out infinite;
+    animation-delay: var(--cmn-delay, 0s);
+  }
+
+  /* A step lighting up in its turn. Stagger with `--i` (rule 13). */
+  .cmn-step {
+    animation: cmn-step 6s ease-in-out infinite;
+    animation-delay: calc(var(--i, 0) * var(--cmn-stagger));
+  }
+
+  /* A path being established. */
+  .cmn-draw {
+    stroke-dashoffset: var(--cmn-len, 400);
+    animation: cmn-draw 1.8s ease-out forwards;
+  }
+}
+
+@keyframes cmn-dash-travel {
+  to { stroke-dashoffset: -24; }
+}
+
+@keyframes cmn-travel {
+  from { offset-distance: 0%; }
+  to   { offset-distance: 100%; }
+}
+
+@keyframes cmn-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
+
+@keyframes cmn-step {
+  0%, 12%   { opacity: 0.35; }
+  20%, 45%  { opacity: 1; }
+  55%, 100% { opacity: 0.35; }
+}
+
+@keyframes cmn-draw {
+  to { stroke-dashoffset: 0; }
+}
+
+/* The theme forces `transition-duration: 0ms !important` while a reader flips
+   the colour scheme, which silences CSS animation for that instant. Nothing to
+   do about it; worth knowing when a diagram looks frozen for a moment on a
+   toggle. */
