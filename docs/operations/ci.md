@@ -155,38 +155,32 @@ stack, run the smoke test.</figcaption>
    those SHAs, so a pointer merged before its target exists makes a fresh clone unbuildable.
 4. **`CARMONAI_TOKEN` is the read credential** for the thirteen private module repositories —
    `Contents: read-only`, on the module repos and not on `back`.
-5. **`actions/checkout@v7` with `persist-credentials: false`** clones `back` itself with the default
-   `GITHUB_TOKEN`, which cannot read the siblings.
-6. **The fetch step checks access first, then initialises.** One API call per module, and a failure names the
-   repository and its status code.
-7. **`mvn -B verify`** on Temurin 25 builds all thirteen modules in dependency order and runs the unit tests
+5. **`actions/checkout@v7` with `persist-credentials: false`** clones `back` with the default `GITHUB_TOKEN`,
+   which cannot read the siblings; the fetch step then checks access module by module before initialising.
+6. **`mvn -B verify`** on Temurin 25 builds all thirteen modules in dependency order and runs the unit tests
    and the Testcontainers integration tests.
-8. **A generated `.env`, `docker compose up -d --build --wait` and `bash smoke.sh`** — the same three
-   commands this page's sibling tells a person to run, on the CPU engine, with fresh secrets.
+7. **A generated `.env`, `docker compose up -d --build --wait` and `bash smoke.sh`** — the same three commands
+   this page's sibling tells a person to run, on the CPU engine, with fresh secrets.
 
 ## What it is
 
-One workflow, `.github/workflows/ci.yaml`, triggered on every pull request and on every push to `main`. It
-runs on `ubuntu-latest` (Docker is preinstalled and Testcontainers needs a Linux runner), has a
-30-minute timeout, and declares `permissions: contents: read` — the workflow itself only ever reads.
+One workflow, `.github/workflows/ci.yaml`, triggered on every pull request and on every push to `main`. It runs
+on `ubuntu-latest` (Docker is preinstalled and Testcontainers needs a Linux runner), has a 30-minute timeout,
+and declares `permissions: contents: read` — the workflow itself only ever reads. The comment at the top states
+its purpose in terms of what it catches: *a broken migration, a Resource/Feign mismatch or a security
+regression in the smoke test fails it.* Those are the three failure modes that are invisible in a code review
+and obvious in a running stack.
 
-The comment at the top states its purpose in terms of what it catches: *a broken migration, a Resource/Feign
-mismatch or a security regression in the smoke test fails it.* Those are the three failure modes that are
-invisible in a code review and obvious in a running stack.
-
-## Why the module fetch needs a token at all
+## Fetching the modules needs a token
 
 `back` holds thirteen git submodules under `api/`, one Git repository per module. They are private, and
 `GITHUB_TOKEN` — the token Actions issues automatically — is scoped to the repository the workflow runs in. It
 cannot read a sibling, so `git submodule update --init --recursive` would fail on the first module.
-
 `CARMONAI_TOKEN` is a fine-grained personal access token with `Contents: read-only`, granted on the module
-repositories and not on `back`. Read-only is the whole permission set: the workflow never pushes, and the
-submodules are checked out detached.
+repositories and not on `back`; read-only is the whole permission set.
 
-The step does the access check before it does the clone, on purpose. It walks every `url` in `.gitmodules`,
-asks the API for each repository, prints the status code, and exits with a `::error::` annotation naming the
-repository if the answer is not 200:
+The step does the access check before it does the clone: it walks every `url` in `.gitmodules`, asks the API for
+each repository, and exits with a `::error::` annotation naming the repository if the answer is not 200.
 
 ```bash
 for repo in $(git config -f .gitmodules --get-regexp '\.url$' | sed -E 's#.*github\.com/(.*)\.git$#\1#'); do
@@ -198,95 +192,80 @@ done
 A module added to `back` but not to the token's repository list fails here, in about a second, instead of
 minutes later inside a Maven resolution error that says nothing about permissions. That is not hypothetical:
 adding a module is a documented step in the `carmonai-new-service` skill precisely because the token has to be
-updated by hand.
-
-The clone rewrites the URL rather than passing credentials per command —
+updated by hand. The clone rewrites the URL rather than passing credentials per command —
 `git config --global url."https://x-access-token:${TOKEN}@github.com/carmonai/".insteadOf
 "https://github.com/carmonai/"`, then `git submodule update --init --recursive`, then
-`git config --global --remove-section` on the same key. `git -c` settings do not reliably reach the
-`git submodule` child processes, so the rewrite has to be global, and it is removed immediately afterwards so
-the token is not in any later step's `git config --list`.
+`git config --global --remove-section` on the same key — because `git -c` settings do not reliably reach the
+`git submodule` child processes. Removing it immediately keeps the token out of any later `git config --list`.
 
-## Build and test
+## Build, test, and start the stack
 
 `actions/setup-java@v6` installs Temurin **25** with `cache: maven`, then `mvn -B verify` runs. Temurin 25 is
-the LTS the project targets and the same JDK the runtime images use. `verify` builds the thirteen modules in
+the LTS the project targets and the same JDK the runtime images use; `verify` builds the thirteen modules in
 the order the aggregator's `pom.xml` declares, runs the unit tests on branchy logic, and runs one Testcontainers
-integration test per database service against a pinned Postgres image.
+integration test per database service against a pinned Postgres image. There is no `mvn install` and no package
+registry — each service resolves its library from the reactor in the same run.
 
-There is no `mvn install` and no package registry. Each service depends on its library at version `1.0.0`,
-resolved from the reactor in the same run — which is also why the merge order above is not a preference:
-`api/account` has to be in the reactor before `api/account-service` compiles.
+The workflow then runs `docker compose up -d --build --wait` and `bash smoke.sh`, both with
+`working-directory: docker`. `--wait` is what makes the next step meaningful: `smoke.sh` immediately issues real
+requests through `localhost:8080`. CI runs the CPU engine — GitHub's runners have no GPU — so `smoke.sh` uses
+its defaults, `MODEL=carmonai/qwen3-0.6b ENGINE=llama`. A *Service logs* step then runs only on
+`failure() && steps.stack.outcome != 'skipped'`, and a *Stop the stack* step runs `docker compose down -v` on
+`always()` under the same condition.
 
 ## A generated environment file, every run
 
-```bash
-{
-  echo "DB_NAME=carmonai"
-  echo "DB_USER=carmonai"
-  echo "DB_PASSWORD=$(openssl rand -hex 24)"
-  echo "VALKEY_PASSWORD=$(openssl rand -hex 24)"
-  echo "ENGINE_API_KEY=$(openssl rand -hex 24)"
-  echo "JWT_PRIVATE_KEY=$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 | grep -v -- ----- | tr -d '\r\n')"
-} > .env
-```
+Before the stack starts, the workflow writes `docker/.env` with seven freshly generated secrets — `DB_NAME`,
+`DB_USER`, `DB_PASSWORD`, `VALKEY_PASSWORD`, `ENGINE_API_KEY`, `JWT_PRIVATE_KEY` (from
+`openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 | grep -v -- ----- | tr -d '\r\n'`) and
+`GRAFANA_ADMIN_PASSWORD`. They exist for one run on an ephemeral runner and are never stored.
 
-Six secrets, generated per run, written into the untracked `docker/.env`, and gone when the runner is. No
-secret is stored in the repository, and none is a repository secret except the token.
+**The seventh key was missing until it was noticed here, and CI would have failed without it.**
+`docker/compose.yaml` gained the observability stack after this workflow was last touched, and its `grafana`
+service reads `${GRAFANA_ADMIN_PASSWORD:?set in .env}`. With only six keys written, `docker compose up` stops
+at variable interpolation — *"GRAFANA_ADMIN_PASSWORD: set in .env"* — before a single container starts. The
+repair is the one line that is now in the workflow, matching `docker/.env.example`. This is worth remembering
+as a failure mode rather than a fixed bug: **adding a service that requires a new variable silently breaks
+every environment that generates its own `.env`**, and the compose assertion (`:?`) is what turns that into an
+immediate, readable failure instead of a service that starts with an empty password.
 
-**This step is behind the compose file and CI fails on it as written.** `docker/compose.yaml` gained the
-observability stack after this workflow was last touched, and the `grafana` service reads
-`${GRAFANA_ADMIN_PASSWORD:?set in .env}`. The block above does not set it, so `docker compose up` stops at
-variable interpolation with *"GRAFANA_ADMIN_PASSWORD: set in .env"* before a single container starts. The
-one-line fix is another `echo "GRAFANA_ADMIN_PASSWORD=$(openssl rand -base64 18)"` in that block, matching
-`docker/.env.example`. `VLLM_API_KEY` is *not* needed: it is only read by `compose.gpu.yaml`, which CI does
-not use. The step is reproduced above exactly as it is written, defect included, because a page that showed
-the fixed version would hide the thing you are about to hit.
+`VLLM_API_KEY` is deliberately *not* generated: only `compose.gpu.yaml` reads it, and CI does not use that
+overlay.
 
 ## Starting the stack and running the smoke test
 
 The workflow then runs `docker compose up -d --build --wait` and `bash smoke.sh`, both with
 `working-directory: docker`. `--wait` is what makes the next step meaningful: `smoke.sh` immediately issues
-real requests through `localhost:8080` and would race the readiness probes without it. CI runs the CPU engine
-— GitHub's runners have no GPU — so `smoke.sh` uses its defaults, `MODEL=carmonai/qwen3-0.6b ENGINE=llama`.
-
-Two cleanup steps follow, with conditions that matter. A *Service logs* step runs
-`docker compose logs --no-color` on `failure() && steps.stack.outcome != 'skipped'` — a green run does not need
-fourteen containers' output, and an earlier failure leaves nothing to show. A *Stop the stack* step runs
-`docker compose down -v` on `always()` under the same condition, so the volumes go with it. On an ephemeral
-runner that is tidiness; on a self-hosted one it is the difference between two runs sharing state and not.
+real requests through `localhost:8080`. CI runs the CPU engine — GitHub's runners have no GPU — so `smoke.sh`
+uses its defaults, `MODEL=carmonai/qwen3-0.6b ENGINE=llama`. A *Service logs* step then runs only on
+`failure() && steps.stack.outcome != 'skipped'`, and a *Stop the stack* step runs `docker compose down -v` on
+`always()` under the same condition, so the volumes go with it.
 
 ## The merge order
 
-Ordering across repositories is the one thing a green workflow cannot prove, because each repository's CI
-passes on its own branch while the combination is still broken.
+Ordering across repositories is the one thing a green workflow cannot prove: each repository's CI passes on
+its own branch while the combination is still broken.
 
-1. **The library repository** (`api/account`, `api/auth`, `api/organization`, `api/usage`, `api/billing`) —
-   it is what the service compiles against.
+1. **The library repository** (`api/account`, `api/auth`, `api/organization`, `api/usage`, `api/billing`) — it
+   is what the service compiles against.
 2. **The service repository** (`api/account-service`, and so on) — it depends on the library at
    `${project.version}`.
 3. **`back`'s pointer commit** — the submodule gitlinks. Nothing else in `back` changes when a module changes;
    the whole repository is an aggregator `pom.xml`, `docker/`, `.github/` and thirteen pointers.
 
 The reason is mechanical. `git submodule update` checks out the exact commit a pointer names, and Maven
-resolves `ai.carmonai:account:1.0.0` from the reactor. A `back` pointer that names a service commit whose
-library commit is not merged yet gives a fresh clone that cannot build, even though every individual
-repository is green — and the failure appears in CI, not in the PR that caused it.
-
-The user's rule sits on top of the mechanics: never push to `main`, open a pull request, and merge only when
-the user says merge. The workflow is what makes that rule safe to follow.
+resolves `ai.carmonai:account:1.0.0` from the reactor. A `back` pointer naming a service commit whose library
+commit is not merged yet gives a fresh clone that cannot build, even though every repository is green on its
+own — and the failure appears in CI, not in the PR that caused it. The user's rule sits on top: never push to
+`main`, open a pull request, and merge only when the user says merge.
 
 ## The docs workflow
 
 `.github/workflows/docs.yaml` publishes this site, separately and independently of the code workflow. It
 triggers on a push to `main` touching `docs/**`, `mkdocs.yml`, `requirements.txt` or the workflow itself, and
-on `workflow_dispatch` so the site can be rebuilt from the Actions tab without an empty commit.
-
-```yaml
-concurrency:
-  group: docs
-  cancel-in-progress: false   # a half-pushed gh-pages is a broken site, not a slow one
-```
+on `workflow_dispatch` so the site can be rebuilt from the Actions tab without an empty commit. Its
+`concurrency` group is `docs` with `cancel-in-progress: false` — cancelling a `gh-deploy` halfway leaves a
+half-pushed `gh-pages` branch, which is a broken site rather than a slow one.
 
 The job checks out with `fetch-depth: 0`, installs Python 3.12 and `requirements.txt`, runs
 `mkdocs build --strict`, and publishes with `mkdocs gh-deploy --force`. `fetch-depth: 0` is not optional: the
@@ -300,29 +279,28 @@ refused, and **Settings → Pages → Source** must be *Deploy from a branch*, b
 
 ## Why it is like this
 
-**One workflow, not one per module.** Thirteen repositories with thirteen workflows would be thirteen places
-to keep a Java version in step. The integration test is what actually needs to run, and only `back` can run
-it — it is the only repository that sees all thirteen modules at once.
+**One workflow, not one per module.** Thirteen repositories with thirteen workflows would be thirteen places to
+keep a Java version in step. The integration test is what actually needs to run, and only `back` can run it —
+it is the only repository that sees all thirteen modules at once.
 
 **The full stack, on every pull request.** Starting fourteen containers and running 443 lines of smoke test
 takes minutes, and it is the only check that catches a broken migration, a route predicate that no longer
-matches its path, or a filter that stopped stripping a header. Cheaper checks would be faster and would miss
-exactly those.
+matches its path, or a filter that stopped stripping a header.
 
 **Fresh secrets rather than repository secrets, and `persist-credentials: false`.** Nothing pins CI to a
-credential that has to be rotated, no run can inherit another run's state, and the one long-lived secret is a
-read token that cannot write anything.
+credential that has to be rotated, no run inherits another run's state, and the one long-lived secret is a read
+token that cannot write anything.
 
 ## What would change it
 
-- **The `GRAFANA_ADMIN_PASSWORD` line above.** Until it is added, the stack step fails; that is a one-line
-  change to `ci.yaml`.
+- **Any new service that requires a variable.** The `GRAFANA_ADMIN_PASSWORD` omission above is the worked
+  example: the workflow generates its own `.env`, so a variable added to `compose.yaml` and not to that block
+  breaks the stack step for everyone. A check that compares the variables compose interpolates against the
+  ones the workflow writes would catch it at the source.
 - **A published library.** Services resolve their library from the reactor, which is why the merge order is
   strict. A package registry would make a pointer commit independently buildable, at the cost of a publishing
-  step — the plan considered GitHub Packages and rejected it, because cross-repo reads need a classic token
-  and `1.0.0` cannot be republished.
+  step — the plan rejected GitHub Packages because cross-repo reads need a classic token.
 - **GPU coverage in CI.** GitHub's runners have no GPU, so `bench.sh` and `batch-bench.sh` are not run there.
-  A self-hosted runner is the upgrade, and it would need the model cache to be warm.
 - **A second person.** `CARMONAI_TOKEN` is one person's fine-grained token; a GitHub App installation token
   would not expire with their account.
 

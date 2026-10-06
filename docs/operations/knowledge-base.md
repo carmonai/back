@@ -265,30 +265,28 @@ changed it.
 
 ## Why it is like this
 
-**Notes in the repository, not in a wiki.** They are versioned with the code, they are visible in a pull
-request that changes a decision, and they are readable by an agent that has only cloned the repository. A wiki
-would be more comfortable to edit and further from the thing it describes.
+**Notes in the repository, not in a wiki.** They are versioned with the code, visible in a pull request that
+changes a decision, and readable by an agent that has only cloned the repository.
 
 **Skills rather than documents.** The `description` in a skill's front matter is a load trigger, so the
-knowledge arrives when it is relevant instead of being read once and forgotten. That is the reason the files
-are written as instructions ("load before designing, reviewing or changing any service") rather than as
-prose.
+knowledge arrives when it is relevant instead of being read once and forgotten. That is why the files are
+written as instructions ("load before designing, reviewing or changing any service") rather than as prose.
 
 **Progress logs with dates and deviations.** Every phase log records not just what was built but where it
 departed from the plan and why. Those deviations are the most useful part: they are the places where the plan
-met reality, and several of them — the file size cap, the name-based UUID, the per-day summary pricing — are
-now permanent features with a recorded reason.
+met reality, and several — the file size cap, the name-based UUID, the per-day summary pricing — are now
+permanent features with a recorded reason.
 
 ## What would change it
 
-- **Hosting.** The repository map, the status table and the "later phases" lists all assume one laptop. They
-  get rewritten together when the platform leaves it.
-- **A second person.** The pending-decisions list is one user's; a team would need an owner and a date
-  against each item rather than a list.
-- **A note that gets edited after its phase.** The rule above works because notes are snapshots. Editing them
-  in place to stay current would remove the history the progress logs exist to keep.
+- **Hosting.** The repository map, the status table and the "later phases" lists all assume one laptop; they get
+  rewritten together when the platform leaves it.
+- **A second person.** The pending-decisions list is one user's; a team would need an owner and a date against
+  each item rather than a list.
+- **A note that gets edited after its phase.** The rule works because notes are snapshots; editing them in
+  place to stay current would remove the history the progress logs exist to keep.
 - **The handoff artifact.** It lives outside the repository, so it cannot be diffed or linked from a pull
-  request, and it will drift first. Moving it into `.claude/skills/` would make the rule enforceable.
+  request, and it will drift first.
 
 ## Where to look
 

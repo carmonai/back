@@ -152,8 +152,8 @@ while the client is still waiting.</figcaption>
   key. The cost is that the gateway is a single point of failure and a single place to get wrong — which is
   why its filters are the most heavily tested code in the repository.
 - **One database, one schema per service.** A single Postgres instance is what a laptop can run; separate
-  schemas keep the boundary honest without paying for separate servers. The rejected alternative was a
-  shared schema with joins across modules: fast to write, impossible to split later.
+  schemas keep the boundary honest without paying for separate servers. The alternative we did not take — one
+  shared schema with joins across modules — is quicker to write and impossible to split later.
 - **Valkey on the request path, never Postgres.** A key lookup, a rate bucket and a credit flag are the only
   things a request must read, and all three are in memory. The engine answers in 253 ms at p95; a database
   round trip on every token would be visible.

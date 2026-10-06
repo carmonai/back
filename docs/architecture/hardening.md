@@ -136,8 +136,7 @@ Feign clients carry explicit timeouts, per dependency, in the service that owns 
 
 | Service | Client | connect | read |
 |---|---|---|---|
-| `account-service` | `organization`, `auth` | 1000 ms | 3000 ms |
-| `billing-service` | `usage`, `organization` | 1000 ms | 3000 ms |
+| every service with a Feign client: `account`, `auth`, `usage`, `billing`, `batch` | each of its dependencies (`organization-service` has none) | 1000 ms | 3000 ms |
 | `gateway-service` | `auth` (WebClient) | 1000 ms | 2000 ms |
 | `inference-service` | engine (WebClient) | 1000 ms | 30 s first token, 30 s idle, 600 s whole |
 
@@ -183,10 +182,11 @@ management:
   endpoints: { web: { exposure: { include: health,prometheus,reconcile } } }   # reconcile: inference, billing
 ```
 
-Compose publishes one port — `8080:8080` on the gateway — and the gateway's route predicates contain no
-`/actuator` path, so `curl http://gateway:8080/actuator/prometheus` is a 401 with no route behind it.
-Prometheus scrapes `:8081/actuator/prometheus` over the internal network, including the engine's own
-`/metrics`; `AccessLogFilter` skips `/actuator/` so health probes never fill the access log.
+Compose publishes one port — `8080:8080` on the gateway — and no route in the gateway's predicate list
+matches an `/actuator` path, so `curl http://gateway:8080/actuator/prometheus` finds no route at all: those
+endpoints answer on `:8081` and nowhere else. Prometheus scrapes `:8081/actuator/prometheus` over the internal
+network, including the engine's own `/metrics`, and `AccessLogFilter` skips `/actuator/` so health probes
+never fill the access log.
 
 ## Why it is like this
 

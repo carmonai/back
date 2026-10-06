@@ -124,6 +124,12 @@ validation:
   unrecognized_links: warn
   anchors: warn
 
+# Authoring material, kept in the repository and readable on GitHub, but deliberately not in the site's
+# navigation: it is about how the pages were written, not about the system they describe. Declared here so
+# `--strict` does not read its absence from the nav as an oversight.
+not_in_nav: |
+  /internals/*
+
 nav:
   - Overview: index.md
   - Architecture:

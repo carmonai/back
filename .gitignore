@@ -5,3 +5,4 @@ demo/*.mp4
 # MkDocs build output
 site/
 .cache/
+*.log

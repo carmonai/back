@@ -41,7 +41,8 @@ at a stub instead of a container.
 | `api/inference-service` | service | `inference-service` | none |
 | `api/gateway-service` | service | `gateway-service` | none |
 
-Every library's own dependency list is the same two entries: `spring-cloud-starter-openfeign` and `lombok`.
+Apart from that one library-to-library edge, every library's dependency list is the same two entries:
+`spring-cloud-starter-openfeign` and `lombok`.
 A library that needed a database driver would be a sign that behaviour had leaked into it.
 
 ## What an aggregate is here

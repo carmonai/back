@@ -68,6 +68,10 @@ jobs:
             echo "VALKEY_PASSWORD=$(openssl rand -hex 24)"
             echo "ENGINE_API_KEY=$(openssl rand -hex 24)"
             echo "JWT_PRIVATE_KEY=$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 | grep -v -- ----- | tr -d '\r\n')"
+          # The observability stack's Grafana requires this (compose asserts on it), so the generated .env
+          # must carry it too: without the line, compose aborts at variable interpolation before any
+          # container starts.
+          echo "GRAFANA_ADMIN_PASSWORD=$(openssl rand -base64 18)"
           } > .env
 
       - name: Start the stack

@@ -121,7 +121,7 @@ a retry would replay tokens the client has — the stream carries the error and 
 | Hop | Connect | Read | Set in |
 |---|---|---|---|
 | gateway → any route | 1000 ms | 15 s default; `/v1` 660 s, files and batches 60 s | `application.yaml`, per-route `metadata` |
-| Feign clients (account, billing, usage services) | 1000 ms | 3 s | `spring.cloud.openfeign.client.config.<name>` |
+| Feign clients (account, auth, usage, billing, batch services) | 1000 ms | 3 s | `spring.cloud.openfeign.client.config.<name>` |
 | inference → engine, first token | 1000 ms | 30 s (`ttft-timeout`) | `Engine`, `InferenceProperties` |
 | inference → engine, whole non-streamed answer | — | 600 s (`response-timeout`) | same |
 | inference → usage-service (usage relay) | 1000 ms | 5 s | `UsageReporter` |

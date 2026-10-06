@@ -174,8 +174,8 @@ its keys within the 60 s cache TTL.
 ## Why it is like this
 
 - **Identity as a header, set once.** The alternative — every service verifying the JWT itself — needs the
-  public key in every service and repeats the check eight times per request fan-out. The cost is that the
-  gateway is a single point of trust, which is why it is the most heavily tested module here and why the
+  public key in every service and repeats the check in every service a request fans out to. The cost is that
+  the gateway is a single point of trust, which is why it is the most heavily tested module here and why the
   strip list is a constant a reviewer can read.
 - **Cheapest check first.** A regex and a CRC32 before a cache read, a cache read before a network call, a
   token count before a database query. Garbage never becomes load.
