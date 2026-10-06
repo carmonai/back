@@ -1,3 +1,7 @@
 docker/.env
 demo/workflow.webp
 demo/*.mp4
+
+# MkDocs build output
+site/
+.cache/

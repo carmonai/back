@@ -1,11 +1,22 @@
 # Builds every module, runs unit + Testcontainers tests, then the stack and smoke.sh.
 # A broken migration, a Resource/Feign mismatch or a security regression in the smoke test fails it.
+#
+# The documentation site is excluded: it has its own workflow (docs.yaml), and a prose-only change should
+# not spend seven minutes of Testcontainers to prove that no Java changed.
 name: ci
 
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - docs/**
+      - mkdocs.yml
+      - requirements.txt
   pull_request:
+    paths-ignore:
+      - docs/**
+      - mkdocs.yml
+      - requirements.txt
 
 permissions:
   contents: read
