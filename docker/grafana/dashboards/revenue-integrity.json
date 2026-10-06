@@ -1,0 +1,161 @@
+{
+  "uid": "carmonai-revenue",
+  "title": "Carmonai — revenue integrity",
+  "description": "What is served, what is metered and what is refused for money reasons. The panels that read carmonai_usage_* / carmonai_billing_* are in the collapsed row at the bottom: those metrics are NOT PUBLISHED YET (see references/observability.md §gaps) and the panels are empty on purpose — a substitute metric would hide the gap instead of showing it.",
+  "tags": ["carmonai", "revenue"],
+  "timezone": "browser",
+  "editable": false,
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": {"from": "now-3h", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Served and billed",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "402 served (out of credit)",
+      "description": "Not an error and not an SLO: a 402 is the correct answer to an organization whose prepaid credit is gone (the no_credit flag the gateway checks). A rise is a business event — customers spending to the end of their credit — and it is also the only revenue signal visible before task D publishes the flag count.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 7, "w": 8, "x": 0, "y": 1},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0,
+          "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 8, "showPoints": "never"},
+          "color": {"mode": "palette-classic"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+        },
+        "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum by (job) (rate(http_server_requests_seconds_count{status=\"402\"}[5m]))", "legendFormat": "{{job}}", "editorMode": "code", "range": true}
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Usage events received vs /v1 requests served",
+      "description": "SLO: at least one usage event per served /v1 request — every answered request is billable, so the event line must not fall below the request line. Both series are real HTTP metrics (usage-service POST /usage/events, inference-service POST /v1/chat/completions), which is why this panel works before task A lands; the UsageIngestionStalled alert fires when events stop while requests continue.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 7, "w": 10, "x": 8, "y": 1},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0,
+          "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 8, "showPoints": "never"},
+          "color": {"mode": "palette-classic"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+        },
+        "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"refId": "events", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(rate(http_server_requests_seconds_count{job=\"usage\", uri=\"/usage/events\"}[5m]))", "legendFormat": "usage events stored/s", "editorMode": "code", "range": true},
+        {"refId": "served", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(rate(http_server_requests_seconds_count{job=\"inference\", uri=\"/v1/chat/completions\"}[5m]))", "legendFormat": "/v1 requests served/s", "editorMode": "code", "range": true}
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Usage events rejected (last hour)",
+      "description": "SLO: zero. usage-service rejects a batch of events as a whole, so any rejection is unbilled work already answered; inference-service keeps them in the Valkey stream and retries, which is why the number can stay above zero without data loss — until the stream fills.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 7, "w": 6, "x": 18, "y": 1},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]},
+          "color": {"mode": "thresholds"}
+        },
+        "overrides": []
+      },
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "background", "graphMode": "none", "textMode": "value"},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(increase(http_server_requests_seconds_count{job=\"usage\", uri=\"/usage/events\", status=~\"5..\"}[1h])) or vector(0)", "legendFormat": "rejected", "editorMode": "code", "range": true}
+      ]
+    },
+    {
+      "id": 5,
+      "type": "row",
+      "title": "Not instrumented yet — the metrics these panels need do not exist (references/observability.md §gaps)",
+      "collapsed": true,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 8},
+      "panels": [
+        {
+          "id": 6,
+          "type": "stat",
+          "title": "Reconciliation mismatches (models)",
+          "description": "Waits for carmonai_inference_reconcile_mismatch{model} (1 = the existing hourly engine-vs-usage reconcile disagreed). Not in any task's metric contract yet: this panel and the ReconciliationMismatch alert are the requirement. Until then, the WARN log line is the only signal.",
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "gridPos": {"h": 7, "w": 8, "x": 0, "y": 9},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "decimals": 0,
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]},
+              "color": {"mode": "thresholds"}
+            },
+            "overrides": []
+          },
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "background", "graphMode": "none", "textMode": "value"},
+          "targets": [
+            {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(carmonai_inference_reconcile_mismatch)", "legendFormat": "models disagreeing", "editorMode": "code", "range": true}
+          ]
+        },
+        {
+          "id": 7,
+          "type": "timeseries",
+          "title": "Window seal lag / debit lag",
+          "description": "Waits for carmonai_usage_seal_lag_seconds (age of the oldest unsealed window) and carmonai_billing_debit_lag_seconds (sealed windows not yet debited). The prototype runs 10 s windows, a 2 s grace, sealing every 2 s and a debit every 2 s: a healthy lag is seconds, so a line measured in minutes is the leak signature.",
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "gridPos": {"h": 7, "w": 10, "x": 8, "y": 9},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "min": 0,
+              "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 8, "showPoints": "never"},
+              "color": {"mode": "palette-classic"},
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+            },
+            "overrides": []
+          },
+          "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+          "targets": [
+            {"refId": "seal", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "carmonai_usage_seal_lag_seconds", "legendFormat": "seal lag", "editorMode": "code", "range": true},
+            {"refId": "debit", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "carmonai_billing_debit_lag_seconds", "legendFormat": "debit lag", "editorMode": "code", "range": true}
+          ]
+        },
+        {
+          "id": 8,
+          "type": "stat",
+          "title": "Organizations with no_credit set",
+          "description": "Waits for carmonai_billing_no_credit_organizations (billing-service syncs the flag into Valkey; the gateway and inference-service read it). A count of organizations, never their ids. Not an error: it is how many customers are out of prepaid credit right now.",
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "gridPos": {"h": 7, "w": 6, "x": 18, "y": 9},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "decimals": 0,
+              "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]},
+              "color": {"mode": "thresholds"}
+            },
+            "overrides": []
+          },
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "value", "graphMode": "none", "textMode": "value"},
+          "targets": [
+            {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "carmonai_billing_no_credit_organizations", "legendFormat": "organizations", "editorMode": "code", "range": true}
+          ]
+        }
+      ]
+    }
+  ]
+}

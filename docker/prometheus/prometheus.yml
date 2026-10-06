@@ -1,0 +1,65 @@
+# Prometheus scrapes every service's management port (8081: never published, never routed) and the engine's
+# own /metrics. 15 s: enough to watch an incident develop, and the plan's 1 s pipeline belongs to
+# multi-replica autoscaling, which does not exist yet (inference-plan.md §7).
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+
+rule_files:
+  - /etc/prometheus/rules.yml
+
+scrape_configs:
+  # One job per service, so `job` carries the service name: every dashboard and alert selects on it. Only
+  # /actuator/prometheus is exposed there; liveness is already the container's own healthcheck.
+  - job_name: account
+    metrics_path: /actuator/prometheus
+    static_configs: [{targets: ["account:8081"]}]
+
+  - job_name: organization
+    metrics_path: /actuator/prometheus
+    static_configs: [{targets: ["organization:8081"]}]
+
+  - job_name: auth
+    metrics_path: /actuator/prometheus
+    static_configs: [{targets: ["auth:8081"]}]
+
+  - job_name: usage
+    metrics_path: /actuator/prometheus
+    static_configs: [{targets: ["usage:8081"]}]
+
+  - job_name: billing
+    metrics_path: /actuator/prometheus
+    static_configs: [{targets: ["billing:8081"]}]
+
+  - job_name: inference
+    metrics_path: /actuator/prometheus
+    static_configs: [{targets: ["inference:8081"]}]
+
+  - job_name: batch
+    metrics_path: /actuator/prometheus
+    static_configs: [{targets: ["batch:8081"]}]
+
+  - job_name: gateway
+    metrics_path: /actuator/prometheus
+    static_configs: [{targets: ["gateway:8081"]}]
+
+  # The CPU engine's own counters, the only queue-depth and KV-cache reading that refreshes faster than
+  # inference-service's hourly reconcile. llama.cpp answers /metrics with the engine key (--api-key), which
+  # compose writes to the file below at container start; /etc/prometheus is mounted read-only, so the key
+  # never reaches a repo file and has no default.
+  # The GPU stack (compose.gpu.yaml) runs vLLM beside llama: copy this block with job_name vllm and target
+  # vllm:8000 (the token file is the same). Its series are num_requests_running, num_requests_waiting and
+  # kv_cache_usage_perc (v0.30.0; the older name gpu_cache_usage_perc is gone) and they are already in
+  # rules.yml and the dashboards.
+  # ponytail: one engine, because the two stacks do not run the same set — a vLLM target here would sit DOWN
+  # on every CPU stack, and "every target UP" is worth more than one fewer copy-paste. Upgrade: add the
+  # block (as above) when vLLM is the stack being watched, or task A's carmonai_engine_* gauges, which
+  # follow whichever engine inference-service is configured with.
+  - job_name: llama
+    metrics_path: /metrics
+    bearer_token_file: /tmp/engine-key
+    static_configs: [{targets: ["llama:8080"]}]
+
+  # Prometheus itself: its own health and TSDB size, which is what the memory ceiling is spent on.
+  - job_name: prometheus
+    static_configs: [{targets: ["127.0.0.1:9090"]}]

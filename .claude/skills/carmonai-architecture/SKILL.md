@@ -51,7 +51,7 @@ Scope today: account, auth, organization, gateway. Inference follows [references
 
 Versions come from `back/api/account/pom.xml` (Java 25 LTS — Boot 4.1 supports up to 26 —, Spring Boot 4.1, Spring Cloud 2025.1, Maven, Lombok). Tests: JUnit + Testcontainers 2; CI: `back/.github/workflows/ci.yaml` (`mvn -B verify`, compose up, `smoke.sh`). Postgres 17 + Flyway; gateway on WebFlux (`spring-cloud-starter-gateway-server-webflux`), other services on `spring-boot-starter-webmvc`. Boot 4 renamed several starters, so confirm artifact names with `mvn verify`.
 
-Later phases (nginx, Redis, Kafka, observability, K8s, CI): read [references/platform.md](references/platform.md) before adding any of them.
+Later phases (nginx, Redis, Kafka, K8s, CI): read [references/platform.md](references/platform.md) before adding any of them. Observability is built — metrics, dashboards and alerts: read [references/observability.md](references/observability.md).
 
 ## Review checklist
 

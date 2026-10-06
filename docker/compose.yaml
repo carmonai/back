@@ -185,6 +185,64 @@ services:
     healthcheck: *readiness
     networks: [internal]
 
+  # Metrics and dashboards. Operator tools on the internal network, exactly like the management ports they
+  # scrape: nothing here is published. Prometheus scrapes every service's :8081/actuator/prometheus, plus
+  # the engine's own /metrics (the only place queue depth and KV-cache use are visible between reconciles).
+  # Grafana's datasource, dashboards and alert list come from docker/grafana, so nothing survives only in a
+  # container. Limits are tight on purpose: this VM also runs twelve services.
+  prometheus:
+    image: prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
+    # The engine's /metrics answers to the engine key. Prometheus expands no environment variables in a
+    # scrape config, so the entrypoint writes the key -- from the environment, never a repo file, never a
+    # default -- to the file the config's bearer_token_file points at, then execs prometheus.
+    # ponytail: 15 days of local TSDB and no remote write -- long-term storage is infrastructure nobody has
+    # asked for yet, and a restart keeps the history that matters (named volume). Upgrade: remote write plus
+    # a store, when someone needs a quarter of history.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        printf '%s' "$$ENGINE_API_KEY" > /tmp/engine-key
+        exec /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus \
+          --storage.tsdb.retention.time=15d
+    environment:
+      ENGINE_API_KEY: ${ENGINE_API_KEY:?set in .env}
+    volumes:
+      - ./prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    healthcheck:
+      test: ["CMD", "/bin/promtool", "query", "instant", "http://127.0.0.1:9090", "vector(1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    mem_limit: 512m
+    cpus: 0.5
+    networks: [internal]
+
+  grafana:
+    image: grafana/grafana:13.2.3@sha256:b28bae15e219c998fb0e0424ed724930cc61b1f61fb404d47c862f9a23f9e572
+    # The image already runs as its own grafana user (472, root group) and /var/lib/grafana is writable by
+    # it, so there is no reason to run this as root and no volume needed: the dashboards are files.
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set in .env}
+      GF_ANALYTICS_REPORTING_ENABLED: "false"    # no usage statistics leave this machine
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      prometheus: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:3000/api/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    mem_limit: 384m
+    cpus: 0.5
+    networks: [internal]
+
 networks:
   internal: {}
 
@@ -193,3 +251,4 @@ volumes:
   valkey-data: {}
   access-logs: {}
   models: {}
+  prometheus-data: {}

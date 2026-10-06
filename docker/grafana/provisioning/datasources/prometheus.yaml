@@ -1,0 +1,16 @@
+# The one datasource, provisioned from the repo: nothing that matters survives only inside a container.
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: prometheus            # the dashboards are files and reference this uid
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      # Prometheus owns the rules (docker/prometheus/rules.yml). Grafana lists them and their firing state
+      # next to its own alerting and never copies them, so the two cannot drift apart.
+      manageAlerts: true
+      httpMethod: POST
+      timeInterval: 15s        # the scrape interval: what $__rate_interval is computed from

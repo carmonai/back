@@ -185,6 +185,8 @@ done
 [[ ${busy%.*} == 0 ]] && echo "ok   engine idle again after the client hung up" || { echo "FAIL engine still busy ($busy)"; exit 1; }
 
 # Usage reaches usage-service once per request that reached the engine: 2 answered, 1 cancelled.
+# The relay in inference-service is a 1 s tick loop: a pass that failed while a dependency restarted is
+# simply retried by the next tick, so this polls briefly (and a failure here is never lost usage).
 sql() { "${DC[@]}" exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tA -c "$1"' sh "$1"; }
 usage=""
 for _ in $(seq 20); do
@@ -346,6 +348,31 @@ done
   || { echo "FAIL the usage was not billed (balance '$balance')"; exit 1; }
 same=$(sql "SELECT (SELECT amount FROM billing.balance WHERE organization_id = '$org') = (SELECT sum(amount) FROM billing.ledger_entry WHERE organization_id = '$org')" | tr -d '\r')
 [[ $same == t ]] && echo "ok   balance = sum of the ledger" || { echo "FAIL balance differs from the ledger"; exit 1; }
+
+## Visible money: a member reads the organization's own balance, usage summary and the books check; another
+## account and a headerless caller read nothing. The gateway routes for the first two are task C's (see the
+## reference): until they exist these endpoints are reachable inside the network only, which is what this does.
+## The balance is bracketed: a debit landing between the two reads must not make this fail (it only falls).
+before=$(sql "SELECT amount FROM billing.balance WHERE organization_id = '$org'" | tr -d '\r')
+visible=$("${DC[@]}" exec -T llama curl -s -H "id-account: $id" "http://billing:8080/billing/organizations/$org/balance" | tr -d '\r')
+after=$(sql "SELECT amount FROM billing.balance WHERE organization_id = '$org'" | tr -d '\r')
+shown=$(sed -nE 's/.*"amountMicroBrl":(-?[0-9]+).*/\1/p' <<<"$visible")
+[[ -n $shown && $shown -le $before && $shown -ge $after && $visible == *'"noCredit":false'* ]] \
+  && echo "ok   200  a member reads the balance, the ledger's own number: $visible" \
+  || { echo "FAIL visible balance '$visible' is outside [$after, $before]"; exit 1; }
+code=$(internal -H "id-account: $other" "http://billing:8080/billing/organizations/$org/balance")
+[[ $code == 404 ]] && echo "ok   404  another account reads no balance" || { echo "FAIL a non-member got $code"; exit 1; }
+code=$(internal "http://billing:8080/billing/organizations/$org/balance")
+[[ $code == 401 ]] && echo "ok   401  no id-account, no numbers" || { echo "FAIL a headerless call got $code"; exit 1; }
+from=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)
+to=$(date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ)
+summary=$("${DC[@]}" exec -T llama curl -s -H "id-account: $id" "http://usage:8080/usage/organizations/$org/summary?from=$from&to=$to" | tr -d '\r')
+grep -qE '"costMicroBrl":[0-9]+' <<<"$summary" && echo "ok   200  a member reads their own usage, priced: $summary" \
+  || { echo "FAIL usage summary '$summary'"; exit 1; }
+code=$(internal -H "id-account: $other" "http://usage:8080/usage/organizations/$org/summary?from=$from&to=$to")
+[[ $code == 404 ]] && echo "ok   404  another account reads no usage" || { echo "FAIL a non-member got $code"; exit 1; }
+code=$(internal "http://billing:8081/actuator/reconcile")
+[[ $code == 200 ]] && echo "ok   200  the books are checked on demand (management port, internal)" || { echo "FAIL reconcile got $code"; exit 1; }
 
 # A second organization gets 1 micro-BRL: one chat uses it up, then /v1 answers 402 until a grant.
 expect 201 "${A[@]}" "${J[@]}" -X POST "$G/organizations" -d '{"name":"Smoke Tiny"}'

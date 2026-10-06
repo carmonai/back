@@ -1,0 +1,148 @@
+# Recording and alert rules. Prometheus evaluates them and Grafana lists them and their state (the
+# Prometheus datasource is provisioned with alert management on). There is deliberately no Alertmanager:
+# no destination has been chosen, so firing state is what an operator reads. What to do about each alert is
+# in .claude/skills/carmonai-architecture/references/observability.md.
+groups:
+  # The SLOs, using the targets the code and the benches already hold (inference-plan.md §8; phase-3 and
+  # phase-5 measurements): TTFT p95 below 2 s and inter-token p95 below 100 ms are the goodput definition,
+  # and TTFT is where capacity C = 4 shows up first.
+  - name: inference-slo
+    rules:
+      - record: ttft:p95_5m
+        expr: histogram_quantile(0.95, sum by (le, model, tier) (rate(carmonai_inference_ttft_seconds_bucket[5m])))
+
+      # Goodput: the share of requests whose first token arrived within 2 s (2 is a bucket boundary in the
+      # metric contract, which is why it can be read straight off the histogram).
+      - record: ttft:goodput_5m
+        expr: |
+          sum by (model, tier) (rate(carmonai_inference_ttft_seconds_bucket{le="2"}[5m]))
+            / sum by (model, tier) (rate(carmonai_inference_ttft_seconds_count[5m]))
+
+      - record: itl:p95_5m
+        expr: histogram_quantile(0.95, sum by (le, model, tier) (rate(carmonai_inference_itl_seconds_bucket[5m])))
+
+  # The engine from its own /metrics, which is also what the queue-depth alert needs: inference-service's
+  # carmonai_engine_* gauges come from a reconcile that runs hourly, too coarse to alert on.
+  - name: engine
+    rules:
+      - record: engine:requests_running
+        expr: max by (job) (vllm:num_requests_running) or max by (job) (llamacpp:requests_processing)
+
+      - record: engine:requests_waiting
+        expr: max by (job) (vllm:num_requests_waiting) or max by (job) (llamacpp:requests_deferred)
+
+      # One ratio on both engines: llama.cpp reports kv_cache_usage_ratio, vLLM v0.30.0 reports
+      # kv_cache_usage_perc ("1 means 100 percent usage" in its own help text) -- not the
+      # gpu_cache_usage_perc the task A brief names, which that image does not expose.
+      - record: engine:cache_usage
+        expr: max by (job) (vllm:kv_cache_usage_perc) or max by (job) (llamacpp:kv_cache_usage_ratio)
+
+  - name: availability
+    rules:
+      # Any of the eight services. Metrics stop, so this is the alert that turns every other one into a
+      # silent failure if it is missing.
+      - alert: ServiceDown
+        expr: up{job=~"account|organization|auth|usage|billing|inference|batch|gateway"} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.job }} has not answered a scrape for 2m"
+          description: >-
+            Prometheus cannot reach {{ $labels.job }}:8081/actuator/prometheus. The container may be down,
+            still starting, or its management port not listening. Check the container's own health status
+            and its logs. No metrics for this service means no SLI either.
+
+      # Both engines at once is the outage; one engine being absent is normal (the CPU and GPU stacks do not
+      # run the same set).
+      - alert: EngineUnreachable
+        expr: max by (job) (up{job=~"llama|vllm"}) == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "no model engine is reachable ({{ $labels.job }} target down)"
+          description: >-
+            Every engine scrape is failing: inference-service will answer 503 once its one retry is spent.
+            Check the engine container (its healthcheck downloads the model on first start, which is slow but
+            the container reports starting, not failing) and confirm the key in .env still matches the one
+            the engine was started with.
+
+      # Configured depths: llama.cpp q = 2 (application.yaml, behind C = 2 slots on the CPU engine); vLLM's
+      # backstop is --max-num-queued-reqs 8. Past them TTFT runs away, which is the SLO on top.
+      - alert: EngineQueueSustained
+        expr: |
+          engine:requests_waiting{job="llama"} > 2
+            or
+          engine:requests_waiting{job="vllm"} > 8
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.job }} queue above its configured depth for 2m"
+          description: >-
+            The engine has more requests waiting than it is configured to hold: admission is letting more
+            through than the engine can start, and the waiting requests are paying for it in TTFT. Check
+            TTFT p95 and the refusals on the SLO dashboard; if the engine is healthy, C (slots) is the
+            number to revisit.
+
+  # The money: usage that never reaches usage-service is revenue nobody bills, and the engine/stored-usage
+  # comparison is the only thing that sees it (plan §8).
+  - name: revenue-integrity
+    rules:
+      # carmonai_inference_reconcile_mismatch is 1 when the existing hourly reconcile finds the engine's
+      # token counters and usage-service's stored tokens outside its tolerance -- the WARN log today. Any
+      # occurrence is worth an alert, so there is no for:.
+      - alert: ReconciliationMismatch
+        expr: max by (model) (carmonai_inference_reconcile_mismatch) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "engine counters and stored usage disagree for {{ $labels.model }}"
+          description: >-
+            Tokens the engine processed are not in usage-service: they will never be billed. Call
+            GET /actuator/reconcile on inference-service (management port, internal network) for the delta,
+            and check usage-service's ingestion errors and the usage:events stream in Valkey.
+
+      # The revenue-leak signature: inference-service is answering requests and usage-service is receiving
+      # nothing. Both series are real HTTP metrics, so this one works with today's stack.
+      - alert: UsageIngestionStalled
+        expr: |
+          sum(rate(http_server_requests_seconds_count{job="inference", uri="/v1/chat/completions"}[5m])) > 0
+            and
+          sum(rate(http_server_requests_seconds_count{job="usage", uri="/usage/events"}[5m])) == 0
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "requests are being served and no usage event is reaching usage-service"
+          description: >-
+            inference-service is answering /v1/chat/completions while usage-service has received nothing for
+            5 m: every one of those requests is unbilled. Check the usage container, then the usage:events
+            stream in Valkey (inference-service retries from there, so events are not lost yet -- a full
+            stream or a dead relay is what to look for).
+
+  # SLO breaches on the inference path. Both share the 5% line: the phase-4/phase-5 exit check is enterprise
+  # goodput >= 95%, and phase-3's bench counts an error or a refusal as a miss.
+  - name: inference-slo-alerts
+    rules:
+      - alert: ErrorShareHigh
+        expr: |
+          sum(rate(carmonai_inference_requests_total{outcome="error"}[5m]))
+            / sum(rate(carmonai_inference_requests_total[5m])) > 0.05
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "more than 5% of inference requests have failed for 5m"
+          description: >-
+            outcome="error" over the last 5 m is above the goodput line. The code tag tells the story:
+            502/503 are the engine or the pool, 500 is a defect in inference-service. Check the engine's
+            own panels (running, waiting, cache) and the service's logs.
+
+      - alert: PayingTierRefusals
+        expr: |
+          sum by (tier) (rate(carmonai_inference_requests_total{tier=~"standard|enterprise", code=~"model_busy|rate_limit_exceeded"}[5m]))
+            / sum by (tier) (rate(carmonai_inference_requests_total{tier=~"standard|enterprise"}[5m])) > 0.05
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.tier }} is being refused more than 5% of the time for 5m"
+          description: >-
+            A paying tier is hitting model_busy or rate_limit_exceeded beyond the 95% goodput the phase-4
+            exit check demands. Trial is shed first by design, so refusals there are not this alert: here it
+            is capacity (C), a tier's share, or one organization holding the slots (VTC, gap 4).

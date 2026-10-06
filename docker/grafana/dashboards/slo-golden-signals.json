@@ -1,0 +1,325 @@
+{
+  "uid": "carmonai-slo",
+  "title": "Carmonai — SLO & golden signals",
+  "description": "Availability, traffic, errors and the inference latency SLOs (TTFT p95 <= 2 s, ITL p95 <= 100 ms; inference-plan.md §8). Panels reading carmonai_inference_* are empty until task A publishes those metrics (see references/observability.md §gaps).",
+  "tags": ["carmonai", "slo"],
+  "timezone": "browser",
+  "editable": false,
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": {"from": "now-1h", "to": "now"},
+  "templating": {
+    "list": [
+      {
+        "name": "job",
+        "label": "service",
+        "type": "query",
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "query": {"query": "label_values(http_server_requests_seconds_count, job)", "refId": "service"},
+        "definition": "label_values(http_server_requests_seconds_count, job)",
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "refresh": 1,
+        "sort": 1,
+        "current": {"selected": true, "text": ["All"], "value": ["$__all"]}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Availability and traffic",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Availability (last scrape)",
+      "description": "SLO: every target UP. A failed scrape is blindness, not a percentage — there is no numeric availability SLO yet (plan §8 leaves it per model class, unset). 1 = UP, 0 = DOWN for 2 minutes (see the ServiceDown alert).",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 1},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]},
+          "color": {"mode": "thresholds"}
+        },
+        "overrides": []
+      },
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "background", "graphMode": "none", "textMode": "value_and_name"},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "max by (job) (up{job=~\"$job\"})", "legendFormat": "{{job}}", "editorMode": "code", "range": true}
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Request rate by service",
+      "description": "Traffic (the R in RED). Every service's own HTTP server metric; the management port's /actuator/prometheus requests are in here too and are the only traffic on an idle stack.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 1},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 8, "showPoints": "never"},
+          "color": {"mode": "palette-classic"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+        },
+        "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum by (job) (rate(http_server_requests_seconds_count{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "{{job}}", "editorMode": "code", "range": true}
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Error share (5m)",
+      "description": "SLO: below 5% (the line on the panel; the ErrorShareHigh alert fires above it for 5m). 5xx only — a 4xx is a client mistake or a business answer (402 out of credit, 429 a refusal) and is charted on the revenue dashboard instead.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 1},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 8, "showPoints": "never"},
+          "color": {"mode": "palette-classic"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 0.05}]}
+        },
+        "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum by (job) (rate(http_server_requests_seconds_count{job=~\"$job\", outcome=\"SERVER_ERROR\"}[5m])) / sum by (job) (rate(http_server_requests_seconds_count{job=~\"$job\"}[5m]))", "legendFormat": "{{job}}", "editorMode": "code", "range": true}
+      ]
+    },
+    {
+      "id": 5,
+      "type": "row",
+      "title": "Inference latency (the SLOs)",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 7},
+      "panels": []
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "TTFT p50 / p95 / p99",
+      "description": "SLO: p95 at or below 2 s (phase-3 bench on the RTX 3050: C = 4 holds TTFT p95 at 0.8 s; the line on the panel is 2 s). Needs carmonai_inference_ttft_seconds — NOT PUBLISHED YET (task A).",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 8, "showPoints": "never"},
+          "color": {"mode": "palette-classic"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 2}]}
+        },
+        "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"refId": "p50", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "histogram_quantile(0.50, sum by (le) (rate(carmonai_inference_ttft_seconds_bucket[$__rate_interval])))", "legendFormat": "p50", "editorMode": "code", "range": true},
+        {"refId": "p95", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "histogram_quantile(0.95, sum by (le) (rate(carmonai_inference_ttft_seconds_bucket[$__rate_interval])))", "legendFormat": "p95 (SLO 2 s)", "editorMode": "code", "range": true},
+        {"refId": "p99", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "histogram_quantile(0.99, sum by (le) (rate(carmonai_inference_ttft_seconds_bucket[$__rate_interval])))", "legendFormat": "p99", "editorMode": "code", "range": true}
+      ]
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "TTFT goodput (5m)",
+      "description": "SLO: at least 95% of requests get their first token within 2 s — the share the phase-4 and phase-5 exit checks demand (enterprise goodput >= 95%). Recorded as ttft:goodput_5m. Needs carmonai_inference_ttft_seconds — NOT PUBLISHED YET (task A).",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "decimals": 2,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "orange", "value": 0.95}, {"color": "green", "value": 0.99}]},
+          "color": {"mode": "thresholds"}
+        },
+        "overrides": []
+      },
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "background", "graphMode": "area", "textMode": "value_and_name"},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "ttft:goodput_5m", "legendFormat": "{{model}} {{tier}}", "editorMode": "code", "range": true}
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Inter-token latency p95",
+      "description": "SLO: p95 at or below 100 ms (TPOT; phase-3 bench measured 24 ms at C = 4, and 100 ms is what the goodput definition allows). The line on the panel is 0.1 s. Needs carmonai_inference_itl_seconds — NOT PUBLISHED YET (task A).",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 7, "w": 8, "x": 0, "y": 16},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 8, "showPoints": "never"},
+          "color": {"mode": "palette-classic"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 0.1}]}
+        },
+        "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "itl:p95_5m", "legendFormat": "{{model}} {{tier}}", "editorMode": "code", "range": true}
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Queue wait p95 (admitted → engine start)",
+      "description": "No SLO of its own: it is what the bounded wait buys (task A, about 1.5 s for paying tiers) and it shows up in TTFT. Needs carmonai_inference_queue_wait_seconds — NOT PUBLISHED YET (task A).",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 7, "w": 8, "x": 8, "y": 16},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 8, "showPoints": "never"},
+          "color": {"mode": "palette-classic"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+        },
+        "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "histogram_quantile(0.95, sum by (le, tier) (rate(carmonai_inference_queue_wait_seconds_bucket[5m])))", "legendFormat": "{{tier}}", "editorMode": "code", "range": true}
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Whole request p95 / p99",
+      "description": "No latency SLO for the whole request: the hard ceiling is the gateway's 660 s route timeout on /v1 (compose of the code's 600 s response timeout). Streamed answers are dominated by output length, so read it with tokens/s. Needs carmonai_inference_request_seconds — NOT PUBLISHED YET (task A).",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 7, "w": 8, "x": 16, "y": 16},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 8, "showPoints": "never"},
+          "color": {"mode": "palette-classic"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+        },
+        "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"refId": "p95", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "histogram_quantile(0.95, sum by (le) (rate(carmonai_inference_request_seconds_bucket[$__rate_interval])))", "legendFormat": "p95", "editorMode": "code", "range": true},
+        {"refId": "p99", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "histogram_quantile(0.99, sum by (le) (rate(carmonai_inference_request_seconds_bucket[$__rate_interval])))", "legendFormat": "p99", "editorMode": "code", "range": true}
+      ]
+    },
+    {
+      "id": 11,
+      "type": "row",
+      "title": "Capacity and engine saturation",
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 23},
+      "panels": []
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "In-flight vs capacity",
+      "description": "How close each model is to what admission allows. The gap between the two lines is the reserved share of the other tiers: trial C/2, standard 85%, enterprise C + q (plan §7). Needs carmonai_inference_inflight / _capacity — NOT PUBLISHED YET (task A).",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 7, "w": 8, "x": 0, "y": 24},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 8, "showPoints": "never"},
+          "color": {"mode": "palette-classic"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+        },
+        "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"refId": "in-flight", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum by (model) (carmonai_inference_inflight)", "legendFormat": "in-flight {{model}}", "editorMode": "code", "range": true},
+        {"refId": "capacity", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum by (model, tier) (carmonai_inference_capacity)", "legendFormat": "capacity {{model}} {{tier}}", "editorMode": "code", "range": true}
+      ]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Engine requests running / waiting",
+      "description": "The engine's own view, scraped directly every 15 s (recording rules engine:requests_running / engine:requests_waiting; llama.cpp requests_processing / requests_deferred, vLLM num_requests_running / num_requests_waiting). SLO: waiting stays at or below the configured depth — 2 for llama.cpp, 8 for vLLM's backstop (EngineQueueSustained alert).",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 7, "w": 8, "x": 8, "y": 24},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 8, "showPoints": "never"},
+          "color": {"mode": "palette-classic"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 3}]}
+        },
+        "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"refId": "running", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "engine:requests_running", "legendFormat": "running {{job}}", "editorMode": "code", "range": true},
+        {"refId": "waiting", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "engine:requests_waiting", "legendFormat": "waiting {{job}}", "editorMode": "code", "range": true}
+      ]
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Engine KV cache usage",
+      "description": "A 0-1 ratio on both engines: llama.cpp reports kv_cache_usage_ratio, vLLM v0.30.0 kv_cache_usage_perc (its help text: 1 means 100 percent usage). No threshold: the engine evicts and keeps serving, so the useful reading is the trend and where TTFT starts to climb with it.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 7, "w": 8, "x": 16, "y": 24},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 8, "showPoints": "never"},
+          "color": {"mode": "palette-classic"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+        },
+        "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "engine:cache_usage", "legendFormat": "{{job}}", "editorMode": "code", "range": true}
+      ]
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Tokens/s by mode and kind",
+      "description": "What the platform is actually selling: output tokens are the billable ones, input tokens are the cached prompt work. mode sync|batch comes from the contract. Needs carmonai_inference_tokens_total — NOT PUBLISHED YET (task A).",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"h": 7, "w": 12, "x": 0, "y": 31},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 8, "showPoints": "never"},
+          "color": {"mode": "palette-classic"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+        },
+        "overrides": []
+      },
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum by (mode, kind) (rate(carmonai_inference_tokens_total[$__rate_interval]))", "legendFormat": "{{mode}} {{kind}} tok/s", "editorMode": "code", "range": true},
+        {"refId": "B", "datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum by (outcome) (rate(carmonai_inference_requests_total[$__rate_interval]))", "legendFormat": "requests/s {{outcome}}", "editorMode": "code", "range": true}
+      ]
+    }
+  ]
+}
